@@ -8,35 +8,39 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.EncryptedPrefs
@@ -51,9 +55,16 @@ import com.example.pcremote.ui.PairingScreen
 import com.example.pcremote.ui.PowerScreen
 import com.example.pcremote.ui.SettingsScreen
 import com.example.pcremote.ui.TouchpadScreen
+import com.example.pcremote.ui.components.ConnectionBanner
+import com.example.pcremote.ui.components.ConnectionDetailsSheet
+import com.example.pcremote.ui.components.ConnectionUiState
+import com.example.pcremote.ui.components.RemoteIconButton
+import com.example.pcremote.ui.components.RemoteTopBar
+import com.example.pcremote.ui.components.uiState
 import com.example.pcremote.ui.theme.RemoteTheme
+import kotlinx.coroutines.launch
 
-/** The four control destinations shown in the bottom nav (04-UI-UX-SPECIFICATION.md §2). */
+/** The four control destinations (04-UI-UX-SPECIFICATION.md §2). */
 enum class AppScreen(val label: String) {
     Touchpad("Touchpad"),
     Keyboard("Keyboard"),
@@ -75,27 +86,40 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             RemoteTheme {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // targetSdk 35 enforces edge-to-edge: content draws under
-                        // the status bar and gesture nav bar unless we inset for
-                        // them (status bar top, nav bar + cutouts bottom/sides).
-                        .safeDrawingPadding()
-                ) {
-                    var connected by remember { mutableStateOf(false) }
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    val connState by connection.state.collectAsState()
+                    var sessionActive by rememberSaveable { mutableStateOf(false) }
 
-                    if (connected) {
+                    // Derive session membership from the single connection
+                    // state source — never a separate "connected" boolean.
+                    LaunchedEffect(connState) {
+                        when {
+                            connState == ConnectionState.CONNECTED -> sessionActive = true
+                            // Pairing is required again only when the token was
+                            // rejected; expected shutdown ends the session too.
+                            (connState == ConnectionState.FAILED && connection.lastAuthFailed) ||
+                                (connState == ConnectionState.DISCONNECTED && connection.lastDisconnectExpected) ->
+                                sessionActive = false
+                        }
+                    }
+
+                    if (sessionActive) {
                         ControlHub(
                             connection = connection,
                             tokenStore = tokenStore,
-                            settingsStore = settingsStore
+                            settingsStore = settingsStore,
+                            pinStore = pinStore,
+                            connState = connState,
+                            onSessionEnded = { sessionActive = false }
                         )
                     } else {
                         PairingScreen(
                             connection = connection,
                             tokenStore = tokenStore,
-                            onConnected = { connected = true }
+                            settingsStore = settingsStore,
+                            pinStore = pinStore,
+                            connState = connState,
+                            onConnected = { sessionActive = true }
                         )
                     }
                 }
@@ -105,22 +129,29 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * The post-pairing shell: title row with Settings, a thin connection-status
- * banner (04-UI-UX-SPECIFICATION.md §2, 10-ERROR-HANDLING.md §5), the active
- * control screen, and a text-only bottom nav. The foreground service runs
- * while CONNECTED so an active session survives backgrounding.
+ * Connected app shell: PC-name top bar with live status, connection banner,
+ * active control screen, snackbar feedback, and an icon bottom nav
+ * (04-UI-UX-SPECIFICATION.md §2, §7, §8).
  */
 @Composable
 private fun ControlHub(
     connection: RemoteConnection,
     tokenStore: TokenStore,
-    settingsStore: SettingsStore
+    settingsStore: SettingsStore,
+    pinStore: PinStore,
+    connState: ConnectionState,
+    onSessionEnded: () -> Unit
 ) {
     var screen by rememberSaveable { mutableStateOf(AppScreen.Touchpad) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showDetails by rememberSaveable { mutableStateOf(false) }
     val sensitivity by settingsStore.sensitivity.collectAsState()
-    val connState by connection.state.collectAsState()
+    val haptics by settingsStore.hapticsEnabled.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    val pcName = connection.currentHost?.let { settingsStore.getName(it) ?: it } ?: "PC Remote"
 
     // Foreground service + notification permission while a session is active.
     val notificationPermissionLauncher =
@@ -143,97 +174,100 @@ private fun ControlHub(
         }
     }
 
-    if (showSettings) {
-        SettingsScreen(
-            tokenStore = tokenStore,
-            settingsStore = settingsStore,
-            onBack = { showSettings = false }
-        )
-        return
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(screen.label, style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { showSettings = true }) { Text("Settings") }
-        }
-
-        when (connState) {
-            ConnectionState.RECONNECTING -> StatusBanner(
-                "Reconnecting…",
-                onClick = { connection.reconnectLast() }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            RemoteTopBar(
+                title = pcName,
+                connection = connection,
+                state = connState,
+                onStatusClick = { showDetails = true },
+                actions = {
+                    RemoteIconButton(
+                        icon = Icons.Filled.Settings,
+                        contentDescription = "Settings",
+                        onClick = { showSettings = true }
+                    )
+                }
             )
-            ConnectionState.CONNECTING, ConnectionState.FAILED, ConnectionState.DISCONNECTED ->
-                StatusBanner(
-                    if (connection.lastDisconnectExpected) "PC is shutting down…"
-                    else "Disconnected — tap to retry",
-                    onClick = { connection.reconnectLast() }
-                )
-            else -> {}
-        }
-
-        Box(modifier = Modifier.weight(1f)) {
-            when (screen) {
-                AppScreen.Touchpad -> TouchpadScreen(connection, sensitivity = sensitivity)
-                AppScreen.Keyboard -> KeyboardScreen(connection)
-                AppScreen.Media -> MediaScreen(connection)
-                AppScreen.Power -> PowerScreen(connection)
+        },
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceVariant) {
+                AppScreen.entries.forEach { destination ->
+                    val selected = destination == screen && !showSettings
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = {
+                            screen = destination
+                            showSettings = false
+                        },
+                        icon = {
+                            when (destination) {
+                                AppScreen.Touchpad -> Icon(Icons.Filled.Mouse, contentDescription = null)
+                                AppScreen.Keyboard -> Icon(Icons.Filled.Keyboard, contentDescription = null)
+                                AppScreen.Media -> Icon(Icons.Filled.PlayCircle, contentDescription = null)
+                                AppScreen.Power -> Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
+                            }
+                        },
+                        label = { Text(destination.label) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
             }
         }
-
-        // Bottom nav: a filled, elevated bar (not floating text) sitting flush
-        // on the safe-area edge. Text-only items keep the no-icon dependency
-        // stance; selection is shown by accent color + weight, same size so the
-        // layout doesn't jump.
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            tonalElevation = 2.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                AppScreen.entries.forEach { destination ->
-                    val isSelected = destination == screen
-                    TextButton(
-                        onClick = { screen = destination },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 52.dp)
-                            .semantics { selected = isSelected },
-                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                            contentColor = if (isSelected) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
+    ) { padding ->
+        if (showSettings) {
+            SettingsScreen(
+                tokenStore = tokenStore,
+                settingsStore = settingsStore,
+                connection = connection,
+                onBack = { showSettings = false },
+                modifier = Modifier.padding(padding)
+            )
+        } else {
+            Column(modifier = Modifier.padding(padding)) {
+                ConnectionBanner(connection, connState, onRetry = { connection.reconnectLast() })
+                Box(modifier = Modifier.weight(1f)) {
+                    when (screen) {
+                        AppScreen.Touchpad -> TouchpadScreen(
+                            connection = connection,
+                            sensitivity = sensitivity,
+                            hapticsEnabled = haptics,
+                            settingsStore = settingsStore
                         )
-                    ) {
-                        Text(
-                            destination.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        AppScreen.Keyboard -> KeyboardScreen(connection)
+                        AppScreen.Media -> MediaScreen(connection)
+                        AppScreen.Power -> PowerScreen(
+                            connection = connection,
+                            pcName = pcName,
+                            onFeedback = { message ->
+                                scope.launch { snackbarHostState.showSnackbar(message) }
+                            }
                         )
                     }
                 }
             }
         }
     }
-}
 
-@Composable
-private fun StatusBanner(text: String, onClick: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
-    ) {
-        Text(
-            text = "$text — tap for details",
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onErrorContainer
+    if (showDetails) {
+        ConnectionDetailsSheet(
+            connection = connection,
+            settingsStore = settingsStore,
+            pinStore = pinStore,
+            connState = connState,
+            onDismiss = { showDetails = false },
+            onDisconnect = {
+                showDetails = false
+                connection.disconnect()
+                onSessionEnded()
+            }
         )
     }
 }

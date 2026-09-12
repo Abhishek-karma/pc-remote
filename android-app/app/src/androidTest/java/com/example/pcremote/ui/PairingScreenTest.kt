@@ -7,11 +7,13 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.DiscoveredPc
 import com.example.pcremote.network.DiscoveryEvents
 import com.example.pcremote.network.DiscoveryService
 import com.example.pcremote.network.MulticastGate
 import com.example.pcremote.network.NsdGateway
+import com.example.pcremote.network.SettingsStore
 import com.example.pcremote.network.PinStore
 import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.network.TokenStore
@@ -61,6 +63,9 @@ class PairingScreenTest {
             PairingScreen(
                 connection = RemoteConnection(TokenStore(prefs), PinStore(prefs)),
                 tokenStore = TokenStore(prefs),
+                settingsStore = SettingsStore(prefs),
+                pinStore = PinStore(prefs),
+                connState = ConnectionState.DISCONNECTED,
                 onConnected = {},
                 discoveryProvider = { fakeDiscovery(gateway) }
             )
@@ -72,8 +77,12 @@ class PairingScreenTest {
         composeTestRule.onNodeWithText("My Desktop PC").performClick()
 
         // No saved token for this host, so only the IP field is prefilled —
-        // pairing still has to go through the code flow.
-        composeTestRule.onNodeWithText("192.168.1.5").assertIsDisplayed()
+        // pairing still has to go through the code flow. The card also shows
+        // the host, so target the editable field specifically.
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasText("192.168.1.5")
+                .and(androidx.compose.ui.test.hasSetTextAction())
+        ).assertIsDisplayed()
     }
 
     @Test
@@ -83,6 +92,9 @@ class PairingScreenTest {
             PairingScreen(
                 connection = RemoteConnection(TokenStore(prefs), PinStore(prefs)),
                 tokenStore = TokenStore(prefs),
+                settingsStore = SettingsStore(prefs),
+                pinStore = PinStore(prefs),
+                connState = ConnectionState.DISCONNECTED,
                 onConnected = {},
                 discoveryProvider = { fakeDiscovery(gateway) }
             )
@@ -91,8 +103,7 @@ class PairingScreenTest {
         composeTestRule.mainClock.advanceTimeBy(6_000)
 
         composeTestRule.onNodeWithText(
-            "No PCs found — make sure both devices are on the same Wi-Fi " +
-                "and the agent is running."
+            "No PCs found yet"
         ).assertIsDisplayed()
     }
 }

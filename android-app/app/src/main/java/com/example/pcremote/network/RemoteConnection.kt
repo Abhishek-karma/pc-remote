@@ -90,18 +90,28 @@ class RemoteConnection(private val tokenStore: TokenStore, private val pinStore:
 
     private val hostClients = mutableMapOf<String, OkHttpClient>()
     private var webSocket: WebSocket? = null
-    private var currentHost: String? = null
-    private var currentPort = 58642
+    private var currentHostInternal: String? = null
+    private var currentPortInternal = 58642
     private var reconnectJob: Job? = null
-    private var reconnectAttempt = 0
+    private var reconnectAttemptInternal = 0
     private var intentionallyClosed = false
 
-    private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
+        private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
     val state: StateFlow<ConnectionState> = _state
+
+    /** Host/port of the active or last connection attempt (details sheet). */
+    val currentHost: String? get() = currentHostInternal
+    val currentPort: Int get() = currentPortInternal
+
+    /** Current reconnect attempt number (1-based; 0 when not reconnecting). */
+    val reconnectAttempt: Int get() = reconnectAttemptInternal
 
     // True after auth_failed: the saved token was rejected, so auto-reconnect
     // would just fail in a loop until the user re-pairs.
     private var authFailed = false
+
+    /** UI reads this to send the user back to pairing instead of retrying. */
+    val lastAuthFailed: Boolean get() = authFailed
 
     // True after the agent announced an expected close (user-initiated
     // shutdown/restart — 10-ERROR-HANDLING.md §3): suppresses the reconnect
@@ -114,19 +124,19 @@ class RemoteConnection(private val tokenStore: TokenStore, private val pinStore:
     /** Drops any in-flight reconnect and starts a fresh connection. */
     fun connect(host: String, port: Int = 58642, pairingCode: String? = null) {
         reconnectJob?.cancel()
-        reconnectAttempt = 0
+        reconnectAttemptInternal = 0
         intentionallyClosed = false
         authFailed = false
         expectedDisconnect = false
-        currentHost = host
-        currentPort = port
+        currentHostInternal = host
+        currentPortInternal = port
         _state.value = ConnectionState.CONNECTING
         doConnect(host, port, pairingCode = pairingCode)
     }
 
     /** Reconnects to the last host using only its saved token (no code prompt). */
     fun reconnectLast() {
-        val host = currentHost ?: return
+        val host = currentHostInternal ?: return
         connect(host, currentPort)
     }
 
@@ -162,7 +172,7 @@ class RemoteConnection(private val tokenStore: TokenStore, private val pinStore:
                     "auth_ok" -> {
                         msg.token?.let { tokenStore.saveToken(host, it) }
                         authFailed = false
-                        if (_state.value == ConnectionState.RECONNECTING) reconnectAttempt = 0
+                        if (_state.value == ConnectionState.RECONNECTING) reconnectAttemptInternal = 0
                         _state.value = ConnectionState.CONNECTED
                     }
                     "auth_failed" -> {
@@ -201,8 +211,8 @@ class RemoteConnection(private val tokenStore: TokenStore, private val pinStore:
 
     private fun scheduleReconnect(host: String, port: Int) {
         if (intentionallyClosed || authFailed) return
-        reconnectAttempt++
-        val delayMs = minOf(1_000L shl (reconnectAttempt - 1).coerceAtMost(5), 30_000L)
+        reconnectAttemptInternal++
+        val delayMs = minOf(1_000L shl (reconnectAttemptInternal - 1).coerceAtMost(5), 30_000L)
         _state.value = ConnectionState.RECONNECTING
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
@@ -320,15 +330,33 @@ class SettingsStore(private val prefs: android.content.SharedPreferences) {
         const val SENSITIVITY_MAX = 3.0f
         const val SENSITIVITY_DEFAULT = 1.5f
         private const val KEY_SENSITIVITY = "touchpad_sensitivity"
+        private const val KEY_HAPTICS = "haptics_enabled"
+        private const val KEY_TOUCHPAD_HINT_SEEN = "touchpad_hint_seen"
         private const val NAME_PREFIX = "pc_name_"
     }
 
     private val _sensitivity = MutableStateFlow(prefs.getFloat(KEY_SENSITIVITY, SENSITIVITY_DEFAULT))
     val sensitivity: StateFlow<Float> = _sensitivity
 
+    private val _hapticsEnabled = MutableStateFlow(prefs.getBoolean(KEY_HAPTICS, true))
+    val hapticsEnabled: StateFlow<Boolean> = _hapticsEnabled
+
+    private val _touchpadHintSeen = MutableStateFlow(prefs.getBoolean(KEY_TOUCHPAD_HINT_SEEN, false))
+    val touchpadHintSeen: StateFlow<Boolean> = _touchpadHintSeen
+
     fun setSensitivity(value: Float) {
         _sensitivity.value = value
         prefs.edit().putFloat(KEY_SENSITIVITY, value).apply()
+    }
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        _hapticsEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_HAPTICS, enabled).apply()
+    }
+
+    fun markTouchpadHintSeen() {
+        _touchpadHintSeen.value = true
+        prefs.edit().putBoolean(KEY_TOUCHPAD_HINT_SEEN, true).apply()
     }
 
     /** Display name for a host (empty means "show the IP"). */

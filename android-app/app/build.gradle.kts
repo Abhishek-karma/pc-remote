@@ -51,6 +51,9 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    // Proper vector icons for the nav bar / controls; R8 tree-shakes unused
+    // icons out of release builds (minify enabled there).
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

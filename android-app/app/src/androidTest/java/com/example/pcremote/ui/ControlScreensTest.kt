@@ -43,15 +43,15 @@ class ControlScreensTest {
         composeTestRule.setContent { KeyboardScreen(connection) }
 
         composeTestRule.onNodeWithText("CTRL").performClick()
-        composeTestRule.onNodeWithText("CTRL").assertIsSelected()
+        composeTestRule.onNodeWithText("CTRL", substring = true).assertIsSelected()
 
-        composeTestRule.onNodeWithText("CTRL").performClick()
-        composeTestRule.onNodeWithText("CTRL").assertIsNotSelected()
+        composeTestRule.onNodeWithText("CTRL", substring = true).performClick()
+        composeTestRule.onNodeWithText("CTRL", substring = true).assertIsNotSelected()
     }
 
     @Test
     fun shutdownShowsDialogAndCancelDismissesIt() {
-        composeTestRule.setContent { PowerScreen(connection) }
+        composeTestRule.setContent { PowerScreen(connection, pcName = "TEST-PC", onFeedback = {}) }
 
         composeTestRule.onNodeWithText("Shut Down").performClick()
         composeTestRule.onNodeWithText("Shut Down PC?").assertIsDisplayed()
@@ -62,7 +62,7 @@ class ControlScreensTest {
 
     @Test
     fun sleepActsImmediatelyWithoutDialog() {
-        composeTestRule.setContent { PowerScreen(connection) }
+        composeTestRule.setContent { PowerScreen(connection, pcName = "TEST-PC", onFeedback = {}) }
 
         composeTestRule.onNodeWithText("Sleep").performClick()
         composeTestRule.onNodeWithText("Sleep PC?").assertDoesNotExist()
