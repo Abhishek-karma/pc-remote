@@ -1,0 +1,26 @@
+name: android-app-ci
+
+on:
+  push:
+    paths: ['android-app/**']
+  pull_request:
+    paths: ['android-app/**']
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+        # Instrumented tests need a device/emulator; those run in the manual
+        # pre-release pass (docs/11-TESTING-STRATEGY.md §4-5).

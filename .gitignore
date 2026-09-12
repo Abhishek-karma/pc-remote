@@ -1,0 +1,28 @@
+# --- .NET (windows-agent) ---
+bin/
+obj/
+*.user
+.vs/
+
+# Published startup exe (build once, don't track)
+windows-agent/publish/
+
+# --- Android (android-app) ---
+.gradle/
+build/
+local.properties
+captures/
+*.apk
+*.aab
+.kotlin/
+*.iml
+.idea/
+
+# --- Misc ---
+.zcode/
+.DS_Store
+Thumbs.db
+*.log
+
+# NuGet/package caches
+packages/

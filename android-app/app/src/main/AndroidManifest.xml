@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PC Remote manifests. Permissions are all normal (auto-granted) and are the
+  networking-only set justified in docs/09-SECURITY-PRIVACY.md §7:
+  INTERNET (LAN sockets), ACCESS_NETWORK_STATE (reconnect logic),
+  CHANGE_WIFI_MULTICAST_STATE (MulticastLock for mDNS discovery).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Networking-only set, justified in docs/09-SECURITY-PRIVACY.md §7:
+         INTERNET (LAN sockets), ACCESS_NETWORK_STATE (reconnect logic),
+         CHANGE_WIFI_MULTICAST_STATE (MulticastLock for mDNS discovery).
+         The foreground service keeps the control socket alive while the
+         user works (POST_NOTIFICATIONS is requested at runtime on API 33+). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="PC Remote"
+        android:usesCleartextTraffic="false"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <!-- WSS only (09-SECURITY-PRIVACY.md §2): the manifest hard-requires
+             the modern scheme this app and agent ship with. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.ConnectionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>
