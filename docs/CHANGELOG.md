@@ -57,6 +57,18 @@ follow semantic-ish versioning once the first real release is tagged (see
   agent that auto-starts at login (Startup shortcut, no console visible)
   stays diagnosable (`14-OBSERVABILITY-LOGGING.md` §2).
 
+- UI/UX overhaul: single-source connection state in the shell (no duplicated
+  "connected" boolean), PC-name top bar with live status line and a
+  connection-details sheet, icon bottom navigation, redesigned Pairing screen
+  (PC cards, explicit searching/empty/failed states, manual entry as
+  secondary with validation), redesigned Touchpad (unified gesture handler
+  with two-finger scroll, split-mouse click bar, first-use gesture hint,
+  D-pad icons + haptics), Keyboard (selected-state modifier chips; fixed a
+  text-input bug that duplicated typed text on the PC), Media (icon remote
+  controls), Power (safe/destructive hierarchy with snackbar feedback),
+  Settings reorganized into semantic sections, design-token theme, and a
+  full vector-icon set (material-icons-extended, tree-shaken in release).
+
 ### Known Gaps (tracked, not yet fixed — see linked docs)
 - Agent "someone is connected" indicator is console-only; a persistent
   visible indicator needs the tray-app rework (`09-SECURITY-PRIVACY.md` §9.1).

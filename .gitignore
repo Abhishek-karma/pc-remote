@@ -26,3 +26,6 @@ Thumbs.db
 
 # NuGet/package caches
 packages/
+# Agent-skills tooling (not part of the product)
+.agents/
+skills-lock.json

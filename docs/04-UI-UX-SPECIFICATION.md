@@ -54,15 +54,17 @@ avoid visual clutter during normal use.
 ## 4. Touchpad Screen — Interaction Detail
 
 - The gesture surface fills all available vertical space above the
-  Left/Right button row (see `TouchpadScreen.kt`).
-- Visual feedback on touch-down: a subtle ripple or opacity change at the
-  touch point, so the user gets confirmation the surface registered their
-  finger (important since there's no physical click feedback).
-- The instructional text ("Drag to move • Tap = left click • Long-press =
-  right click") shown in the empty implementation should be replaced with a
-  **first-run overlay/tooltip** that appears once and then never again
-  (tracked via a local "hasSeenTouchpadTutorial" flag), rather than
-  permanent on-screen text that wastes space for returning users.
+  Left/Right click bar; it's a rounded, outlined container with a subtle
+  mouse watermark instead of an empty gray rectangle.
+- One unified gesture handler: one finger drags the cursor (relative
+  deltas), tap = left click, long-press = right button (press-and-hold,
+  release to finish), two-finger drag = `mouse_scroll`.
+- The instructional text is a **first-use gesture hint pill** ("Drag = move ·
+  Tap = click · Hold = right · Two fingers = scroll", Got it), shown once
+  (persisted flag) — never permanent on-screen text.
+- Left/Right buttons render as a split mouse bar (filled left half, outlined
+  right half) with haptic feedback on press; D-pad mode uses arrow icons
+  with content descriptions and 56dp targets.
 
 ## 5. Keyboard Screen — Layout (implemented)
 
