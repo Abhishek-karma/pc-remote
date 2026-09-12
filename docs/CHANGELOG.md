@@ -52,6 +52,10 @@ follow semantic-ish versioning once the first real release is tagged (see
   alternative, `13-ACCESSIBILITY.md` §2), PC rename in Settings (`F9.1`),
   and a foreground session service with runtime notification permission.
 - CI: GitHub Actions workflows for both codebases (`.github/workflows/`).
+- Agent file logging: console output is mirrored to
+  `%AppData%\PcRemoteAgent\logs\agent-<date>.log` (7-day retention) so an
+  agent that auto-starts at login (Startup shortcut, no console visible)
+  stays diagnosable (`14-OBSERVABILITY-LOGGING.md` §2).
 
 ### Known Gaps (tracked, not yet fixed — see linked docs)
 - Agent "someone is connected" indicator is console-only; a persistent

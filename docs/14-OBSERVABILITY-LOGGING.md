@@ -11,14 +11,15 @@ remote log aggregation in v1.
 ## 2. Windows Agent Logging
 
 **Current state:** plain `Console.WriteLine` calls throughout `Program.cs`
-— connection events, pairing codes, auth success/failure, and unknown
-message types are printed to the console the agent runs in.
+**mirrored to a dated log file** — `%AppData%\PcRemoteAgent\logs\agent-<date>.log`
+(7-day retention, pruned at startup) via `AgentLog.cs`. The mirror exists so
+an agent that runs at login (Startup-folder entry, no visible console) can
+still be diagnosed and its pairing code read from the log file.
 
 **Planned improvements:**
-- Once the agent becomes a tray app (no visible console,
-  `05-TECHNICAL-ARCHITECTURE.md` §3), redirect this output to a rolling log
-  file (e.g., `%AppData%\PcRemoteAgent\logs\agent-<date>.log`) so
-  troubleshooting is still possible without a console window.
+- When the agent becomes a tray app (no visible console,
+  `05-TECHNICAL-ARCHITECTURE.md` §3), the file mirror stays; only the
+  console half becomes optional.
 - Introduce log levels (Info/Warn/Error) rather than uniform
   `Console.WriteLine` — e.g., a normal connect/disconnect is Info, a failed
   auth attempt is Warn, an unhandled exception in command handling is Error.

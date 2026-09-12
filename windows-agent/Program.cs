@@ -38,6 +38,10 @@ public static class Program
 
     public static async Task Main()
     {
+        // Console output also lands in a dated log file, so a startup-run
+        // agent (no console visible) can still be diagnosed (14 §2).
+        AgentLog.Init();
+
         Console.WriteLine("=== PC Remote Agent ===");
         Console.WriteLine($"Listening on port {Port} (WSS)");
 
