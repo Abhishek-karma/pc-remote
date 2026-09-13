@@ -149,6 +149,8 @@ jobs:
     name: GitHub Release
     needs: [windows, android]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -187,4 +189,14 @@ jobs:
             echo "## Verification"
             echo "- SHA-256 checksums: \`SHA256SUMS.txt\`"
           } > notes.md
-          gh release create "$TAG" --title "PC Remote $TAG" --notes-file notes.md dist/*
+          ls -la dist
+          if ! out=$(gh release create "$TAG" --verify-tag \
+               --title "PC Remote $TAG" --notes-file notes.md dist/* 2>&1); then
+            echo "$out"
+            # Surface the raw error as an annotation so it is visible via the
+            # public check-run API without signing in.
+            echo "::error::gh release create failed: ${out:0:700}"
+            exit 1
+          fi
+          echo "$out"
+
