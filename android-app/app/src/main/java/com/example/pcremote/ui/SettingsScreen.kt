@@ -168,7 +168,7 @@ fun SettingsScreen(
         SectionHeader("About")
         SettingsCard {
             Text(
-                "PC Remote v0.1.0 — controls a Windows PC on your local network " +
+                "PC Remote v0.1.1 — controls a Windows PC on your local network " +
                     "over WSS. No data leaves your LAN.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
