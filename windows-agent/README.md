@@ -28,13 +28,25 @@ netsh advfirewall firewall add rule name="PC Remote Agent mDNS" dir=in action=al
 
 ```bash
 cd windows-agent
-dotnet run
+dotnet run            # tray mode is the default for the published exe
 ```
 
-You'll see console output like:
+The published agent runs as a **tray application** (no console window):
+
+- the tray icon shows a menu with the **live pairing code** (plus a
+  "Copy pairing code" action), the connected-device count, a **"Run at
+  startup"** toggle (writes a HKCU Run-key entry — user level, no admin
+  rights), a logs-folder shortcut, and Exit;
+- a notification balloon shows the pairing code on start and every time it
+  rotates;
+- startup and connection events land in
+  `%AppData%\PcRemoteAgent\logs\agent-<date>.log`.
+
+For development with visible output run `dotnet run -- --console` (or
+`PC-Remote-Agent-win-x64.exe --console`) — the output looks like:
 
 ```
-=== PC Remote Agent ===
+=== PC Remote Agent (console mode) ===
 Listening on port 58642 (WSS)
 Pairing code (valid 5 minutes, auto-refreshes): 483920
 Local IP addresses to enter manually if discovery fails:

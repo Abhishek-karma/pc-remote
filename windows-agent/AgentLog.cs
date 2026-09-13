@@ -26,13 +26,29 @@ public static class AgentLog
             Directory.CreateDirectory(LogDir);
             PruneOldLogs();
             var file = Path.Combine(LogDir, $"agent-{DateTime.Now:yyyyMMdd}.log");
-            Console.SetOut(new DualWriter(Console.Out, File.AppendText(file)));
+            // FileShare.ReadWrite: another agent instance (or an editor) may
+            // hold the same daily log open — a tray agent must never lose its
+            // log to a sharing violation.
+            var writer = new StreamWriter(
+                new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+            Console.SetOut(new DualWriter(Console.Out, writer));
             Console.WriteLine($"[log] writing to {file}");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[!] Log file unavailable ({ex.Message}); console only");
         }
+    }
+
+    /// <summary>Opens the log folder in Explorer (tray menu shortcut).</summary>
+    public static void OpenLogsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDir);
+            System.Diagnostics.Process.Start("explorer.exe", $"\"{LogDir}\"");
+        }
+        catch { /* best effort */ }
     }
 
     private static void PruneOldLogs()

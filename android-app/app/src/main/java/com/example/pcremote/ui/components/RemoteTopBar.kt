@@ -4,10 +4,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -19,9 +21,9 @@ import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.RemoteConnection
 
 /**
- * App shell top bar: PC name (or screen title) with a live connection status
- * line beneath it, plus trailing actions. Tapping the status opens connection
- * details. Replaces the old bare title + Settings text row (04 §7).
+ * App shell top bar, matching the product mock: PC name with the status dot
+ * top-right, the plain status line beneath it (tapping it opens connection
+ * details), plus trailing actions.
  */
 @Composable
 fun RemoteTopBar(
@@ -38,6 +40,27 @@ fun RemoteTopBar(
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
+            val ui = connection.uiState(state)
+            val label = when (ui) {
+                is ConnectionUiState.Connected -> "Connected"
+                is ConnectionUiState.Connecting -> "Connecting…"
+                is ConnectionUiState.Reconnecting ->
+                    "Reconnecting" + (ui.attempt.takeIf { it > 1 }?.let { " · attempt $it" } ?: "") + "…"
+                is ConnectionUiState.Failed ->
+                    if (ui.expectedShutdown) "PC is shutting down" else "Disconnected"
+                ConnectionUiState.Disconnected -> "Disconnected"
+            }
+            val dotColor = when (ui) {
+                is ConnectionUiState.Connected -> StatusColors.positive()
+                is ConnectionUiState.Connecting, is ConnectionUiState.Reconnecting -> StatusColors.pending()
+                is ConnectionUiState.Failed ->
+                    if (ui.expectedShutdown) StatusColors.pending() else StatusColors.error()
+                ConnectionUiState.Disconnected -> StatusColors.error()
+            }
+            val clickable = ui is ConnectionUiState.Connected ||
+                ui is ConnectionUiState.Disconnected ||
+                (ui is ConnectionUiState.Failed && !ui.expectedShutdown)
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -48,57 +71,23 @@ fun RemoteTopBar(
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f, fill = false)
                 )
+                Spacer(modifier = Modifier.width(12.dp))
+                StatusDot(dotColor, description = label)
                 actions()
             }
-            ConnectionStatusLine(connection, state, Modifier.padding(top = 2.dp), onStatusClick)
-        }
-    }
-}
-
-@Composable
-private fun ConnectionStatusLine(
-    connection: RemoteConnection,
-    state: ConnectionState,
-    modifier: Modifier = Modifier,
-    onStatusClick: () -> Unit
-) {
-    val ui = connection.uiState(state)
-    val (label, clickable) = when (ui) {
-        is ConnectionUiState.Connected -> "Connected" to true
-        is ConnectionUiState.Connecting -> "Connecting…" to false
-        is ConnectionUiState.Reconnecting ->
-            "Reconnecting" + (ui.attempt.takeIf { it > 1 }?.let { " · attempt $it" } ?: "") + "…" to false
-        is ConnectionUiState.Failed ->
-            if (ui.expectedShutdown) "PC is shutting down" to false else "Disconnected" to true
-        ConnectionUiState.Disconnected -> "Disconnected" to true
-    }
-    val dotColor = when (ui) {
-        is ConnectionUiState.Connected -> StatusColors.positive()
-        is ConnectionUiState.Connecting, is ConnectionUiState.Reconnecting -> StatusColors.pending()
-        is ConnectionUiState.Failed ->
-            if (ui.expectedShutdown) StatusColors.pending() else StatusColors.error()
-        ConnectionUiState.Disconnected -> StatusColors.error()
-    }
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .then(if (clickable) Modifier.clickable(onClick = onStatusClick) else Modifier),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        StatusDot(dotColor, description = label)
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (clickable) {
-            Text(
-                "· details",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 40.dp)
+                    .then(if (clickable) Modifier.clickable(onClick = onStatusClick) else Modifier),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

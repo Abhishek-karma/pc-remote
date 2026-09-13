@@ -2,6 +2,7 @@ package com.example.pcremote.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,12 +11,15 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +36,7 @@ import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.network.SettingsStore
 import com.example.pcremote.network.TokenStore
 import com.example.pcremote.ui.components.SectionHeader
+import com.example.pcremote.ui.theme.Corners
 import kotlin.math.roundToInt
 
 /**
@@ -60,10 +65,10 @@ fun SettingsScreen(
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -72,90 +77,103 @@ fun SettingsScreen(
         }
 
         SectionHeader("Trusted PCs")
-        if (hosts.isEmpty()) {
-            Text(
-                "No PCs paired yet — pair one from the connect screen.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            hosts.forEach { host ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            settingsStore.getName(host) ?: host,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Text(
-                            host,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+        SettingsCard {
+            if (hosts.isEmpty()) {
+                Text(
+                    "No PCs paired yet — pair one from the connect screen.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                hosts.forEachIndexed { index, host ->
+                    if (index > 0) HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                settingsStore.getName(host) ?: host,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                host,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                renameTarget = host
+                                renameValue = settingsStore.getName(host) ?: host
+                            }
+                        ) { Text("Rename") }
+                        TextButton(
+                            onClick = {
+                                tokenStore.forget(host)
+                                settingsStore.removeName(host)
+                                hosts = tokenStore.allHosts()
+                            }
+                        ) { Text("Forget") }
                     }
-                    TextButton(
-                        onClick = {
-                            renameTarget = host
-                            renameValue = settingsStore.getName(host) ?: host
-                        }
-                    ) { Text("Rename") }
-                    TextButton(
-                        onClick = {
-                            tokenStore.forget(host)
-                            settingsStore.removeName(host)
-                            hosts = tokenStore.allHosts()
-                        }
-                    ) { Text("Forget") }
                 }
             }
         }
 
         SectionHeader("Touchpad")
-        Text(
-            "Sensitivity",
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(top = 4.dp)
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        SettingsCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Sensitivity", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Cursor speed per gesture",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    "${((sensitivity * 10).roundToInt()) / 10f}\u00D7",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+            }
             Slider(
                 value = sensitivity,
                 onValueChange = { settingsStore.setSensitivity(it) },
                 valueRange = SettingsStore.SENSITIVITY_MIN..SettingsStore.SENSITIVITY_MAX,
                 steps = 24,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxWidth()
             )
-            Text(
-                "${((sensitivity * 10).roundToInt()) / 10f}\u00D7",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 12.dp)
+            SwitchRow(
+                label = "Haptic feedback",
+                description = "Subtle vibration on clicks and D-pad",
+                checked = haptics,
+                onCheckedChange = { settingsStore.setHapticsEnabled(it) }
             )
         }
-        SwitchRow(
-            label = "Haptic feedback",
-            description = "Subtle vibration on clicks and D-pad",
-            checked = haptics,
-            onCheckedChange = { settingsStore.setHapticsEnabled(it) }
-        )
 
         SectionHeader("About")
-        Text(
-            "PC Remote v0.1.0 — controls a Windows PC on your local network " +
-                "over WSS. No data leaves your LAN.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            connection.currentHost?.let { "Connected to ${connection.currentHost}:${connection.currentPort}" }
-                ?: "Not connected",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        SettingsCard {
+            Text(
+                "PC Remote v0.1.0 — controls a Windows PC on your local network " +
+                    "over WSS. No data leaves your LAN.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                connection.currentHost?.let { "Connected to ${connection.currentHost}:${connection.currentPort}" }
+                    ?: "Not connected",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 
     renameTarget?.let { host ->
@@ -181,6 +199,21 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
             }
+        )
+    }
+}
+
+@Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(Corners.large),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content
         )
     }
 }

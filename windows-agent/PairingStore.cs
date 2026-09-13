@@ -55,6 +55,12 @@ public class PairingStore
         }
     }
 
+    /// <summary>The live pairing code, for UI hosts (tray menu).</summary>
+    public string CurrentCode
+    {
+        get { lock (_lock) return _currentPairingCode; }
+    }
+
     public bool TryAuthenticate(string? token, string? pairingCode)
     {
         lock (_lock)

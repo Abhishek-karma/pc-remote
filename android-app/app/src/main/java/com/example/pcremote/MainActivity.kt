@@ -82,7 +82,11 @@ class MainActivity : ComponentActivity() {
         val tokenStore = TokenStore(prefs)
         val settingsStore = SettingsStore(prefs)
         val pinStore = PinStore(prefs)
-        val connection = RemoteConnection(tokenStore, pinStore)
+        val connection = RemoteConnection(tokenStore, pinStore) { host, name ->
+            // The agent reports its machine name on auth_ok — remember it so
+            // the UI shows the real PC name, including manual-IP pairings.
+            settingsStore.setName(host, name)
+        }
 
         setContent {
             RemoteTheme {

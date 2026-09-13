@@ -44,7 +44,8 @@ data class RemoteMessage(
     val modifiers: List<String>? = null,
     val text: String? = null,
     val token: String? = null,
-    val pairingCode: String? = null
+    val pairingCode: String? = null,
+    val pcName: String? = null
 )
 
 /**
@@ -75,7 +76,13 @@ class PinStore(private val prefs: SharedPreferences) {
  * with the saved token using exponential backoff (RECONNECTING), so a Wi-Fi
  * hiccup heals without user action (docs/10-ERROR-HANDLING.md §5).
  */
-class RemoteConnection(private val tokenStore: TokenStore, private val pinStore: PinStore) {
+class RemoteConnection(
+    private val tokenStore: TokenStore,
+    private val pinStore: PinStore,
+    /** Called when the agent reports its machine name (auth_ok) — lets the
+     *  app show the real PC name even for manual-IP pairings. */
+    private val onPcName: ((host: String, name: String) -> Unit)? = null
+) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -171,6 +178,7 @@ class RemoteConnection(private val tokenStore: TokenStore, private val pinStore:
                 when (msg.type) {
                     "auth_ok" -> {
                         msg.token?.let { tokenStore.saveToken(host, it) }
+                        msg.pcName?.let { onPcName?.invoke(host, it) }
                         authFailed = false
                         if (_state.value == ConnectionState.RECONNECTING) reconnectAttemptInternal = 0
                         _state.value = ConnectionState.CONNECTED

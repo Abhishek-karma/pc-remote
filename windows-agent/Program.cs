@@ -1,18 +1,15 @@
 // PC Remote - Windows Agent
-// .NET 8 console app. Serves a WebSocket-over-TLS endpoint on 0.0.0.0:58642
-// using its own self-signed certificate (CertificateManager.cs) — no
-// HttpListener, so no `netsh urlacl`/admin rights are needed. Handles
-// pairing (PairingStore.cs), then simulates mouse/keyboard/media/power via
-// Win32 SendInput, and advertises itself via mDNS (MdnsAdvertiser.cs).
+// Tray application (WinForms NotifyIcon; no console window in normal use).
+// Serves a WebSocket-over-TLS endpoint on 0.0.0.0:58642 using its own
+// self-signed certificate (CertificateManager.cs) — no HttpListener, so no
+// `netsh urlacl`/admin rights are needed. Handles pairing (PairingStore.cs),
+// then drives mouse/keyboard/media/power via Win32 SendInput, and advertises
+// itself via mDNS (MdnsAdvertiser.cs). Run with --console for terminal
+// output (development).
 //
 // Required NuGet packages:
 //   Makaretu.Dns.Multicast (mDNS advertisement)
 //   System.Security.Cryptography.ProtectedData (DPAPI for cert + tokens)
-//
-// Build & run:
-//   dotnet run
-//
-// Project file (PcRemoteAgent.csproj) should target net8.0 (or net6.0+).
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -31,100 +28,164 @@ namespace PcRemoteAgent;
 
 public static class Program
 {
-    private const int Port = 58642;
+    public const int Port = 58642;
     private static readonly PairingStore Pairing = new();
 
     /// <summary>clientIp -> connected-at, used for the connected-device indicator (§6).</summary>
     private static readonly ConcurrentDictionary<string, DateTime> Connected = new();
 
-    public static async Task Main()
+    /// <summary>Live pairing code for UI hosts (tray menu).</summary>
+    public static string CurrentPairingCode => Pairing.CurrentCode;
+
+    /// <summary>Raised on background threads whenever the pairing code rotates.</summary>
+    public static event Action<string>? PairingCodeChanged;
+
+    /// <summary>Raised on background threads when the connected-device count changes.</summary>
+    public static event Action<int>? ConnectedCountChanged;
+
+    private static TcpListener? _listener;
+    private static Mutex? _singleInstance;
+
+    /// <summary>Version for display (InformationalVersion without the commit suffix).</summary>
+    public static string VersionDisplay =>
+        (Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+         ?? "0.0.0").Split('+')[0];
+
+    [STAThread]
+    public static async Task Main(string[] args)
     {
-        // Console output also lands in a dated log file, so a startup-run
-        // agent (no console visible) can still be diagnosed (14 §2).
+        // Console output also lands in a dated log file, so an agent with no
+        // visible UI can still be diagnosed (14 §2).
         AgentLog.Init();
 
-        Console.WriteLine("=== PC Remote Agent ===");
+        if (args.Contains("--console"))
+        {
+            AttachParentConsole();
+            await RunConsoleAsync();
+            return;
+        }
+
+        // Single instance: a startup entry plus a manual launch (or a double
+        // start during development) must not create a second tray agent —
+        // the second one would die on the port or fork the pairing state.
+        _singleInstance = new Mutex(initiallyOwned: true, @"Local\PC-Remote-Agent", out var createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "PC Remote is already running. Check the system tray for its icon.",
+                "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _singleInstance.Dispose();
+            return;
+        }
+
+        try
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.Run(new TrayApplicationContext());
+        }
+        finally
+        {
+            _singleInstance.ReleaseMutex();
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    /// <summary>Reattach to the launching terminal so --console output is visible.</summary>
+    private static void AttachParentConsole() => AttachConsole(-1);
+
+    private static async Task RunConsoleAsync()
+    {
+        Console.WriteLine("=== PC Remote Agent (console mode) ===");
         Console.WriteLine($"Listening on port {Port} (WSS)");
         // InformationalVersion carries CI suffixes (e.g. 1.0.0-ci.42).
-        var infoVersion = System.Reflection.Assembly.GetEntryAssembly()
-            ?.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        var infoVersion = Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
         Console.WriteLine($"Version {infoVersion ?? typeof(Program).Assembly.GetName().Version?.ToString()}");
+        Console.WriteLine("Local IP addresses to enter manually if discovery fails:");
+        foreach (var ip in GetLocalIPv4Addresses())
+            Console.WriteLine($"  {ip}:{Port} (wss)");
 
-        // Fresh pairing code, then auto-rotate every 5 minutes (09-SECURITY-PRIVACY.md §3).
-        var pairingCode = Pairing.GeneratePairingCode();
-        Console.WriteLine($"Pairing code (valid 5 minutes, auto-refreshes): {pairingCode}");
+        PairingCodeChanged += code =>
+            Console.WriteLine($"Pairing code (valid 5 minutes, auto-refreshes): {code}");
+        ConnectedCountChanged += n => Console.WriteLine($"     {n} device(s) connected");
 
         using var shutdown = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            RequestShutdown(shutdown);
+        };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RequestShutdown(shutdown);
+
+        try
+        {
+            await StartServerAsync(shutdown.Token);
+        }
+        catch (OperationCanceledException) { /* shutdown requested */ }
+
+        Console.WriteLine("[*] Shutting down");
+        StopServer();
+    }
+
+    private static void RequestShutdown(CancellationTokenSource shutdown)
+    {
+        if (shutdown.IsCancellationRequested) return;
+        Console.WriteLine("[*] Shutdown requested");
+        try { _listener?.Stop(); } catch { /* already stopped */ }
+        shutdown.Cancel();
+    }
+
+    /// <summary>
+    /// Starts pairing rotation, mDNS, TLS certificate and the accept loop.
+    /// Returns when <paramref name="ct"/> is cancelled; throws on fatal startup
+    /// errors (e.g. port already in use). Hosts wire <see cref="PairingCodeChanged"/>
+    /// and <see cref="ConnectedCountChanged"/> before calling this.
+    /// </summary>
+    public static async Task StartServerAsync(CancellationToken ct)
+    {
+        PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
+
         _ = Task.Run(async () =>
         {
             try
             {
-                while (!shutdown.IsCancellationRequested)
+                while (!ct.IsCancellationRequested)
                 {
-                    await Task.Delay(PairingStore.CodeLifetime, shutdown.Token);
-                    if (!Pairing.IsCodeExpired()) continue; // already refreshed elsewhere
+                    await Task.Delay(PairingStore.CodeLifetime, ct);
                     lock (Pairing)
                     {
-                        if (!Pairing.IsCodeExpired()) continue;
-                        var fresh = Pairing.GeneratePairingCode();
-                        Console.WriteLine($"[code] Pairing code refreshed: {fresh}");
+                        if (!Pairing.IsCodeExpired()) continue; // already refreshed elsewhere
+                        PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
                     }
                 }
             }
             catch (OperationCanceledException) { /* shutdown requested */ }
         }, CancellationToken.None);
 
-        Console.WriteLine("Local IP addresses to enter manually if discovery fails:");
-        foreach (var ip in GetLocalIPv4Addresses())
-            Console.WriteLine($"  {ip}:{Port} (wss)");
-
         // Advertise via mDNS so the app can auto-discover this PC (falls back
         // gracefully to manual IP entry if mDNS is unavailable).
         MdnsAdvertiser.Start(Port);
 
-        X509Certificate2 cert;
-        try
+        var cert = CertificateManager.LoadOrCreate();
+
+        _listener = new TcpListener(IPAddress.Any, Port);
+        _listener.Start();
+
+        while (!ct.IsCancellationRequested)
         {
-            cert = CertificateManager.LoadOrCreate();
+            var client = await _listener.AcceptTcpClientAsync(ct);
+            _ = Task.Run(() => HandleConnectionAsync(client, cert));
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[!] TLS certificate unavailable ({ex.Message}); refusing to serve plaintext");
-            return;
-        }
-
-        var listener = new TcpListener(IPAddress.Any, Port);
-        listener.Start();
-
-        // Graceful shutdown; idempotent — ProcessExit can fire alongside CancelKeyPress.
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true;
-            RequestShutdown(shutdown, listener, "Ctrl+C");
-        };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => RequestShutdown(shutdown, listener, "process exit");
-
-        try
-        {
-            while (!shutdown.IsCancellationRequested)
-            {
-                var client = await listener.AcceptTcpClientAsync(shutdown.Token);
-                _ = Task.Run(() => HandleConnectionAsync(client, cert));
-            }
-        }
-        catch (OperationCanceledException) { /* shutdown requested */ }
-
-        Console.WriteLine("[*] Shutting down");
-        MdnsAdvertiser.Stop();
-        listener.Stop();
     }
 
-    private static void RequestShutdown(CancellationTokenSource shutdown, TcpListener listener, string reason)
+    /// <summary>Tears down mDNS and the listener. Safe to call twice.</summary>
+    public static void StopServer()
     {
-        if (shutdown.IsCancellationRequested) return;
-        Console.WriteLine($"[*] Shutdown requested ({reason})");
-        try { listener.Stop(); } catch { /* already stopped */ }
-        shutdown.Cancel();
+        MdnsAdvertiser.Stop();
+        try { _listener?.Stop(); } catch { /* already stopped */ }
     }
 
     internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
@@ -162,7 +223,14 @@ public static class Program
                         {
                             authenticated = true;
                             var token = Pairing.IssueTokenIfNeeded(msg.Token);
-                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage { Type = "auth_ok", Token = token }));
+                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                            {
+                                Type = "auth_ok",
+                                Token = token,
+                                // The app stores this as the display name —
+                                // covers manual-IP pairing too (mock §header).
+                                PcName = AgentInfo.Name
+                            }));
                             Console.WriteLine($"[+] {clientIp} authenticated");
                         }
                         else
@@ -207,6 +275,7 @@ public static class Program
     private static void PrintConnectedCount()
     {
         Console.WriteLine($"     {Connected.Count} device(s) connected");
+        ConnectedCountChanged?.Invoke(Connected.Count);
     }
 
     private static void HandleCommand(RemoteMessage msg)
@@ -274,6 +343,13 @@ public class RemoteMessage
     [JsonPropertyName("text")] public string? Text { get; set; }
     [JsonPropertyName("token")] public string? Token { get; set; }
     [JsonPropertyName("pairingCode")] public string? PairingCode { get; set; }
+    [JsonPropertyName("pcName")] public string? PcName { get; set; }
+}
+
+/// <summary>Identity details the app fetches automatically.</summary>
+public static class AgentInfo
+{
+    public static string Name => Environment.MachineName;
 }
 
 /// <summary>

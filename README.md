@@ -6,15 +6,17 @@ directly to the PC over an encrypted WebSocket (WSS) connection.
 
 ## Components
 
-**Windows agent** (`windows-agent/`) — .NET 8 application that
+**Windows agent** (`windows-agent/`) — .NET 8 tray application that
 
 - serves a TLS WebSocket endpoint with a self-signed certificate (no
   administrator rights required),
-- pairs devices with 6-digit codes that rotate every five minutes,
+- pairs devices with 6-digit codes that rotate every five minutes (shown in
+  the tray menu and a start balloon),
+- can run at Windows startup (built-in toggle, per-user),
 - persists trusted devices using DPAPI encryption,
 - controls mouse, keyboard, media, and power via the Win32 API,
 - advertises itself via mDNS (`_pc-remote._tcp.local.`) for automatic
-  discovery.
+  discovery, and reports its machine name to the app on pairing.
 
 **Android app** (`android-app/`) — Kotlin / Jetpack Compose client that
 
