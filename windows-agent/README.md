@@ -1,89 +1,90 @@
-# PC Remote — Windows Agent
+<div align="center">
 
-Windows server half of PC Remote: a **WebSocket-over-TLS** (WSS) endpoint
-that lets the Android app pair and control this PC — mouse, keyboard, media,
-power — and advertises itself via mDNS so the app can find it automatically.
+# 🖥️ PC Remote — Windows Agent
 
-## Requirements
+**High-performance, lightweight background tray server for PC Remote on Windows 10/11.**
 
-- .NET 8 SDK (https://dotnet.microsoft.com/download)
-- Windows 10/11
+[![.NET 8.0](https://img.shields.io/badge/.NET-8.0-512BD4?style=flat-square&logo=dotnet)](https://dotnet.microsoft.com/)
+[![Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?style=flat-square&logo=windows)](https://microsoft.com/windows)
+[![WSS](https://img.shields.io/badge/Protocol-TLS%20WebSocket-00E5FF?style=flat-square)](https://en.wikipedia.org/wiki/WebSocket)
 
-## Setup
+Runs cleanly in your Windows system tray, exposing an encrypted WebSocket (WSS) endpoint to simulate mouse, keyboard, media, and power actions via Win32 API.
 
-No admin rights and no `netsh` steps are required — the agent binds a plain
-TCP port and serves TLS with its own self-signed certificate (keyed to this
-machine, stored under `%AppData%\PcRemoteAgent\`).
+</div>
 
-The only setup is the Windows Firewall, so inbound connections are allowed:
+---
+
+## ⚡ Overview
+
+The Windows Agent serves as the local host daemon for PC Remote:
+- **Zero Configuration Needed**: Generates a self-signed X.509 certificate automatically upon first run—no `HttpListener` or administrator rights (`netsh urlacl`) required.
+- **System Tray Integration**: Operates completely in the background with context menu shortcuts for live pairing codes, startup auto-run, and diagnostic logs.
+- **Zero-Cloud Discovery**: Uses Multicast DNS (mDNS) broadcasting (`_pc-remote._tcp.local.`) for instant recognition by Android devices on the LAN.
+- **Secure by Default**: Encrypts trusted client tokens using Windows Data Protection API (DPAPI) and refreshes active pairing codes every 5 minutes.
+
+---
+
+## 📋 Requirements
+
+- **Operating System**: Windows 10 or Windows 11 (x64 / ARM64)
+- **Runtime**:
+  - Pre-built binary from GitHub Releases is **fully self-contained** (no .NET installation required).
+  - For source builds: [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+
+---
+
+## 🛡️ Windows Firewall Setup
+
+To allow the Android app to connect and discover the agent, add rules for the WebSocket port and mDNS multicast:
 
 ```powershell
+# Inbound TCP for WebSocket TLS (Port 58642)
 netsh advfirewall firewall add rule name="PC Remote Agent" dir=in action=allow protocol=TCP localport=58642
+
+# Inbound UDP for mDNS Discovery (Port 5353)
 netsh advfirewall firewall add rule name="PC Remote Agent mDNS" dir=in action=allow protocol=UDP localport=5353
 ```
 
-(The second rule is for mDNS advertisement — only needed for auto-discovery.)
+---
 
-## Run it
+## 🚀 Usage & Features
 
+### Standard Tray Execution
+Simply run `PC-Remote-Agent-win-x64.exe` (or `dotnet run` from source).
+- A notification balloon displays the initial 6-digit pairing code upon startup.
+- The system tray context menu provides:
+  - **Live 6-Digit Code**: Displays current code with a one-click "Copy code" action.
+  - **Connection Counter**: Real-time connected client status.
+  - **Run at Startup**: User-level auto-start toggle (HKCU Run entry; no admin privileges required).
+  - **Open Logs Directory**: Direct access to `%AppData%\PcRemoteAgent\logs\`.
+  - **Exit**: Cleanly shuts down active listener loops and mDNS advertisements.
+
+### Console Development Mode
+For development, real-time logging, and terminal output:
 ```bash
-cd windows-agent
-dotnet run            # tray mode is the default for the published exe
+dotnet run -- --console
+# or:
+PC-Remote-Agent-win-x64.exe --console
 ```
 
-The published agent runs as a **tray application** (no console window):
+---
 
-- the tray icon shows a menu with the **live pairing code** (plus a
-  "Copy pairing code" action), the connected-device count, a **"Run at
-  startup"** toggle (writes a HKCU Run-key entry — user level, no admin
-  rights), a logs-folder shortcut, and Exit;
-- a notification balloon shows the pairing code on start and every time it
-  rotates;
-- startup and connection events land in
-  `%AppData%\PcRemoteAgent\logs\agent-<date>.log`.
+## ⌨️ Supported Input Actions
 
-For development with visible output run `dotnet run -- --console` (or
-`PC-Remote-Agent-win-x64.exe --console`) — the output looks like:
+| Feature Category | Win32 API Implementation | Supported Commands / Keys |
+| :--- | :--- | :--- |
+| **Cursor / Trackpad** | `SendInput` (`MOUSEINPUT`) | Relative coordinates (`dx`, `dy`), Left, Right, Middle click, Drag, Wheel scroll |
+| **Function Keys** | `keybd_event` (`VkMap`) | `F1`–`F24` with `Ctrl`, `Alt`, `Shift`, `Win` modifiers |
+| **Navigation & Edit** | `keybd_event` (`VkMap`) | `Insert`, `Delete`, `Home`, `End`, `Page Up`, `Page Down`, `Print Screen`, `Escape`, `Tab` |
+| **Direct Text** | `SendInput` (`KEYEVENTF_UNICODE`) | Full UTF-16 / Unicode text typing |
+| **Media Keys** | `keybd_event` (`VK_VOLUME_*`, `VK_MEDIA_*`) | Volume Up/Down, Mute, Play/Pause, Next Track, Previous Track |
+| **System Power** | `SetSuspendState`, `ExitWindowsEx`, `LockWorkStation` | Lock, Sleep, Restart, Shutdown |
 
+---
+
+## 🧪 Testing
+
+Run unit tests locally with `dotnet test`:
+```bash
+dotnet test PcRemoteAgent.Tests/PcRemoteAgent.Tests.csproj
 ```
-=== PC Remote Agent (console mode) ===
-Listening on port 58642 (WSS)
-Pairing code (valid 5 minutes, auto-refreshes): 483920
-Local IP addresses to enter manually if discovery fails:
-  192.168.1.42:58642 (wss)
-mDNS: advertising "MY-PC" _pc-remote._tcp. on port 58642
-```
-
-Enter the pairing code into the Android app to connect. The phone should
-find this PC automatically in the "Discover nearby PC" list (mDNS); if not,
-type the IP manually. Trust tokens are stored encrypted on this machine, so
-already-paired phones stay paired across agent restarts, and the 5-minute
-pairing code auto-rotates.
-
-## What's implemented vs. what's stubbed
-
-Implemented:
-- WSS server (TcpListener + SslStream + minimal RFC 6455 framing), self-signed
-  certificate generated on first run — no `HttpListener`, no admin rights
-- Pairing via a 6-digit code that expires after 5 minutes and rotates
-  automatically, then a persistent trust token (DPAPI-encrypted on disk)
-- Mouse move (relative), click (left/right/middle, down/up/click), scroll
-- Keyboard: special keys (arrows, enter, backspace, etc.) with modifiers, plus
-  arbitrary Unicode text typing
-- Media keys (play/pause, next, prev, volume, mute)
-- Power actions (sleep, shutdown, restart, lock workstation), announcing
-  `disconnecting` before an expected shutdown/restart
-- mDNS advertisement (`_pc-remote._tcp.`, via `Makaretu.Dns.Multicast`)
-- Live "N device(s) connected" counter in the console
-
-Not yet implemented:
-- File transfer, screen mirroring, clipboard sync
-- A tray icon UI with a persistent "connected" indicator (currently a
-  console app)
-
-## Next steps to harden this for real use
-
-1. Move from a console app to a system tray app so it can run quietly in the
-   background and show pairing codes / connected-device status from a menu.
-2. Wrap each `HandleCommand` dispatch individually so one bad command logs
-   and continues rather than ending the connection.
