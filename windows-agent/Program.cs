@@ -458,22 +458,74 @@ public static class Win32Input
 
     // Simple virtual-key map for common special keys used by the remote's
     // dedicated key buttons (arrows, enter, backspace, etc.).
-    private static readonly Dictionary<string, ushort> VkMap = new()
+    // Complete virtual-key map for navigation, editing, system, and F1–F24 function keys.
+    private static readonly Dictionary<string, ushort> VkMap = new(StringComparer.OrdinalIgnoreCase)
     {
+        // Modifiers & Control Keys
+        ["CTRL"] = 0x11,
+        ["CONTROL"] = 0x11,
+        ["ALT"] = 0x12,
+        ["SHIFT"] = 0x10,
+        ["WIN"] = 0x5B,
+        ["WINDOWS"] = 0x5B,
+        ["LWIN"] = 0x5B,
+        ["RWIN"] = 0x5C,
+
+        // Standard Navigation & Editing Keys
         ["ENTER"] = 0x0D,
+        ["RETURN"] = 0x0D,
         ["BACKSPACE"] = 0x08,
+        ["BKSP"] = 0x08,
         ["TAB"] = 0x09,
         ["ESC"] = 0x1B,
+        ["ESCAPE"] = 0x1B,
         ["SPACE"] = 0x20,
+        ["INSERT"] = 0x2D,
+        ["INS"] = 0x2D,
+        ["DELETE"] = 0x2E,
+        ["DEL"] = 0x2E,
+        ["HOME"] = 0x24,
+        ["END"] = 0x23,
+        ["PAGEUP"] = 0x21,
+        ["PGUP"] = 0x21,
+        ["PAGEDOWN"] = 0x22,
+        ["PGDN"] = 0x22,
         ["LEFT"] = 0x25,
         ["UP"] = 0x26,
         ["RIGHT"] = 0x27,
         ["DOWN"] = 0x28,
-        ["DELETE"] = 0x2E,
-        ["CTRL"] = 0x11,
-        ["ALT"] = 0x12,
-        ["SHIFT"] = 0x10,
-        ["WIN"] = 0x5B,
+        ["PRINTSCREEN"] = 0x2C,
+        ["PRTSC"] = 0x2C,
+        ["SCROLLLOCK"] = 0x91,
+        ["PAUSE"] = 0x13,
+        ["CAPSLOCK"] = 0x14,
+        ["NUMLOCK"] = 0x90,
+
+        // Function Keys (F1 - F24)
+        ["F1"] = 0x70,
+        ["F2"] = 0x71,
+        ["F3"] = 0x72,
+        ["F4"] = 0x73,
+        ["F5"] = 0x74,
+        ["F6"] = 0x75,
+        ["F7"] = 0x76,
+        ["F8"] = 0x77,
+        ["F9"] = 0x78,
+        ["F10"] = 0x79,
+        ["F11"] = 0x7A,
+        ["F12"] = 0x7B,
+        ["F13"] = 0x7C,
+        ["F14"] = 0x7D,
+        ["F15"] = 0x7E,
+        ["F16"] = 0x7F,
+        ["F17"] = 0x80,
+        ["F18"] = 0x81,
+        ["F19"] = 0x82,
+        ["F20"] = 0x83,
+        ["F21"] = 0x84,
+        ["F22"] = 0x85,
+        ["F23"] = 0x86,
+        ["F24"] = 0x87,
     };
 
     public static void SendKey(string key, List<string> modifiers)

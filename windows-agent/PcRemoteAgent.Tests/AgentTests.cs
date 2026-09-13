@@ -164,6 +164,25 @@ public class RemoteMessageTests
     }
 
     [Fact]
+    public void RoundTripsFunctionKeyCombo()
+    {
+        var original = new RemoteMessage { Type = "key_press", Key = "F4", Modifiers = new List<string> { "ALT" } };
+        var back = JsonSerializer.Deserialize<RemoteMessage>(JsonSerializer.Serialize(original));
+        Assert.NotNull(back);
+        Assert.Equal("F4", back.Key);
+        Assert.Equal(new[] { "ALT" }, back.Modifiers);
+    }
+
+    [Fact]
+    public void RoundTripsExtendedEditingKey()
+    {
+        var original = new RemoteMessage { Type = "key_press", Key = "PRTSC" };
+        var back = JsonSerializer.Deserialize<RemoteMessage>(JsonSerializer.Serialize(original));
+        Assert.NotNull(back);
+        Assert.Equal("PRTSC", back.Key);
+    }
+
+    [Fact]
     public void OmittedFieldsDeserializeAsNull()
     {
         var back = JsonSerializer.Deserialize<RemoteMessage>("{\"type\":\"auth_failed\"}");
