@@ -21,6 +21,8 @@
 
     <application
         android:label="PC Remote"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:usesCleartextTraffic="false"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <!-- WSS only (09-SECURITY-PRIVACY.md §2): the manifest hard-requires

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher foreground: a minimal mouse glyph in the app's amber accent.
+     108dp viewport, with the glyph kept inside the ~66dp safe circle so
+     launcher masks never clip it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Mouse body: vertical capsule, centered -->
+    <path
+        android:fillColor="#E8B45A"
+        android:pathData="M54,26 a19,19 0 0 1 19,19 v18 a19,19 0 0 1 -19,19 a19,19 0 0 1 -19,-19 v-18 a19,19 0 0 1 19,-19 z" />
+
+    <!-- Upper section slightly brighter to suggest the top shell -->
+    <path
+        android:fillColor="#F3D28C"
+        android:pathData="M54,26 a19,19 0 0 1 19,19 v3 h-38 v-3 a19,19 0 0 1 19,-19 z" />
+
+    <!-- Split line between top shell and body -->
+    <path
+        android:fillColor="#0E1216"
+        android:pathData="M35,46 h38 v3 h-38 z" />
+
+    <!-- Scroll wheel -->
+    <path
+        android:fillColor="#241B05"
+        android:pathData="M51.5,32 h5 a2.5,2.5 0 0 1 2.5,2.5 v7 a2.5,2.5 0 0 1 -2.5,2.5 h-5 a2.5,2.5 0 0 1 -2.5,-2.5 v-7 a2.5,2.5 0 0 1 2.5,-2.5 z" />
+</vector>
