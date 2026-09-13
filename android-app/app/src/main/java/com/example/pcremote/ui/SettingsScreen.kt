@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.pcremote.network.PinStore
 import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.network.SettingsStore
 import com.example.pcremote.network.TokenStore
@@ -50,7 +51,8 @@ fun SettingsScreen(
     settingsStore: SettingsStore,
     connection: RemoteConnection,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    pinStore: PinStore? = null
 ) {
     var hosts by remember { mutableStateOf(tokenStore.allHosts()) }
     val sensitivity by settingsStore.sensitivity.collectAsState()
@@ -115,6 +117,10 @@ fun SettingsScreen(
                             onClick = {
                                 tokenStore.forget(host)
                                 settingsStore.removeName(host)
+                                // Clear the certificate pin too — otherwise a
+                                // re-paired host after an agent reinstall
+                                // would fail TLS pinning forever.
+                                pinStore?.clearPin(host)
                                 hosts = tokenStore.allHosts()
                             }
                         ) { Text("Forget") }

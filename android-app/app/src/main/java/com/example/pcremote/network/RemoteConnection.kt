@@ -64,6 +64,15 @@ class PinStore(private val prefs: SharedPreferences) {
             prefs.edit().putString("certpin_$host", fingerprint).apply()
         }
     }
+
+    /**
+     * Removes the pin so the host can be re-paired trust-on-first-use (e.g.
+     * after the agent was reinstalled and generated a new certificate).
+     * Only ever called from explicit user action ("Forget").
+     */
+    fun clearPin(host: String) {
+        prefs.edit().remove("certpin_$host").apply()
+    }
 }
 
 /**
@@ -101,6 +110,8 @@ class RemoteConnection(
     private var currentPortInternal = 58642
     private var reconnectJob: Job? = null
     private var reconnectAttemptInternal = 0
+    private var reconnectStartedAt = 0L
+    private val reconnectPolicy = ReconnectPolicy()
     private var intentionallyClosed = false
 
         private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
@@ -219,12 +230,20 @@ class RemoteConnection(
 
     private fun scheduleReconnect(host: String, port: Int) {
         if (intentionallyClosed || authFailed) return
-        reconnectAttemptInternal++
-        val delayMs = minOf(1_000L shl (reconnectAttemptInternal - 1).coerceAtMost(5), 30_000L)
+        val attempt = reconnectAttemptInternal + 1
+        // Cumulative ceiling: stop silently retrying after ~5 minutes and let
+        // the user decide (Phase E) — the banner's Retry restarts cleanly.
+        if (attempt == 1) reconnectStartedAt = android.os.SystemClock.elapsedRealtime()
+        val elapsed = android.os.SystemClock.elapsedRealtime() - reconnectStartedAt
+        if (reconnectPolicy.shouldGiveUp(elapsed)) {
+            _state.value = ConnectionState.FAILED
+            return
+        }
+        reconnectAttemptInternal = attempt
         _state.value = ConnectionState.RECONNECTING
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            delay(delayMs)
+            delay(reconnectPolicy.delayMs(attempt))
             if (!intentionallyClosed && !authFailed) doConnect(host, port, pairingCode = null)
         }
     }

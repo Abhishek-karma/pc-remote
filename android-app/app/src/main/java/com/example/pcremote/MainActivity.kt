@@ -232,6 +232,7 @@ private fun ControlHub(
                 settingsStore = settingsStore,
                 connection = connection,
                 onBack = { showSettings = false },
+                pinStore = pinStore,
                 modifier = Modifier.padding(padding)
             )
         } else {
