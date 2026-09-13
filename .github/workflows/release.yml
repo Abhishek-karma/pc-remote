@@ -167,6 +167,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh cannot detect the repo from a
+          # git remote — set it explicitly.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           SIGNED: ${{ needs.android.outputs.signed }}
         run: |
