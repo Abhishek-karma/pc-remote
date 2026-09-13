@@ -38,3 +38,6 @@ docs/
 # --- Signing material (never commit) ---
 *.jks
 *.keystore
+
+# --- Release signing material (local only, never commit) ---
+signing/
