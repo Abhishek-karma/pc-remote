@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.ui.theme.RemoteColors
+import com.example.pcremote.ui.theme.statusPending
+import com.example.pcremote.ui.theme.statusPositive
 
 /**
  * Single UI-facing connection state, derived from the one authoritative
@@ -132,9 +134,9 @@ fun RemoteIconButton(
 /** Status colors used by the indicator + banner (single source). */
 object StatusColors {
     @Composable
-    fun positive() = RemoteColors.Positive
+    fun positive() = statusPositive()
     @Composable
-    fun pending() = MaterialTheme.colorScheme.onSurfaceVariant
+    fun pending() = statusPending()
     @Composable
     fun error() = MaterialTheme.colorScheme.error
 }

@@ -35,4 +35,26 @@ object RemoteColors {
     val OnError = Color(0xFF2B0A0A)
     val ErrorContainer = Color(0xFF47201F)
     val OnErrorContainer = Color(0xFFF3D4D0)
+
+    // Light theme — same roles, adjusted for light surfaces: the amber accent
+    // darkens to hold contrast on near-white backgrounds (WCAG AA).
+    val LightBackground = Color(0xFFF4F6F9)
+    val LightSurface = Color(0xFFFFFFFF)
+    val LightSurfaceVariant = Color(0xFFE3E9F0)
+    val LightSurfaceContainer = Color(0xFFEAEFF4)
+    val LightOutline = Color(0xFFB7C1CC)
+    val LightOnBackground = Color(0xFF1A212B)
+    val LightOnSurface = Color(0xFF1A212B)
+    val LightOnSurfaceVariant = Color(0xFF4B5765)
+    val LightAccent = Color(0xFF7C5A10)
+    val LightOnAccent = Color(0xFFFFFFFF)
+    val LightAccentContainer = Color(0xFFF2E2BC)
+    val LightOnAccentContainer = Color(0xFF33280A)
+    val LightSecondaryContainer = Color(0xFFDDE5EE)
+    val LightOnSecondaryContainer = Color(0xFF253141)
+    val LightPositive = Color(0xFF2E7D46)
+    val LightError = Color(0xFFA93B32)
+    val LightOnError = Color(0xFFFFFFFF)
+    val LightErrorContainer = Color(0xFFF6DAD6)
+    val LightOnErrorContainer = Color(0xFF4A1512)
 }

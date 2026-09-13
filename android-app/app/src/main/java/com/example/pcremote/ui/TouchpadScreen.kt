@@ -1,5 +1,6 @@
 package com.example.pcremote.ui
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -28,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,9 +48,8 @@ import androidx.compose.ui.unit.dp
 import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.network.SettingsStore
 import com.example.pcremote.ui.theme.Corners
-import kotlin.math.abs
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Touchpad screen — the primary control surface. Single unified gesture
@@ -65,7 +66,7 @@ fun TouchpadScreen(
     settingsStore: SettingsStore
 ) {
     var dpadMode by rememberSaveable { mutableStateOf(false) }
-    val hintSeen by settingsStore.touchpadHintSeen.collectAsStateSafe()
+    val hintSeen by settingsStore.touchpadHintSeen.collectAsState()
     val haptics = LocalHapticFeedback.current
     fun haptic() {
         if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -103,90 +104,79 @@ fun TouchpadScreen(
                         RoundedCornerShape(Corners.large)
                     )
                     .pointerInput(sensitivity) {
-                        // Unified handler: tap / long-press / drag / two-finger scroll.
-                        val slop = viewConfiguration.touchSlop
-                        val longPress = viewConfiguration.longPressTimeoutMillis
+                        // Unified gesture handler; all classification lives in
+                        // TouchpadGestureEngine (unit-tested) — this loop only
+                        // translates pointer events and dispatches actions.
+                        val engine = TouchpadGestureEngine(
+                            slopPx = viewConfiguration.touchSlop,
+                            longPressTimeoutMs = viewConfiguration.longPressTimeoutMillis
+                        )
+                        fun perform(action: TouchpadGestureEngine.Action) {
+                            when (action) {
+                                is TouchpadGestureEngine.Action.MoveCursor -> {
+                                    val dx = (action.dx * sensitivity).roundToInt()
+                                    val dy = (action.dy * sensitivity).roundToInt()
+                                    if (dx != 0 || dy != 0) connection.sendMouseMove(dx, dy)
+                                }
+                                is TouchpadGestureEngine.Action.Scroll ->
+                                    connection.sendScroll(action.steps)
+                                TouchpadGestureEngine.Action.LeftClick ->
+                                    connection.sendMouseClick(button = "left", action = "click")
+                                TouchpadGestureEngine.Action.RightClick -> {
+                                    haptic()
+                                    connection.sendMouseClick(button = "right", action = "click")
+                                }
+                                TouchpadGestureEngine.Action.RightDown -> {
+                                    haptic()
+                                    connection.sendMouseClick(button = "right", action = "down")
+                                }
+                                TouchpadGestureEngine.Action.RightUp ->
+                                    connection.sendMouseClick(button = "right", action = "up")
+                                TouchpadGestureEngine.Action.Haptic -> haptic()
+                            }
+                        }
+
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
-                            var dragged = false
-                            var isScroll = false
-                            var rightDown = false
-                            var scrollAccum = 0f
-                            val downTime = down.uptimeMillis
-                            var latest = downTime
+                            engine.down(down.uptimeMillis)
 
                             while (true) {
-                                // Long-press must fire even when the finger is
-                                // perfectly still, so bound the wait to the
-                                // remaining press time instead of blocking.
-                                val canLongPress = !dragged && !rightDown && !isScroll
-                                val remaining =
-                                    if (canLongPress) (downTime + longPress - latest).coerceAtLeast(0L)
-                                    else Long.MAX_VALUE
-                                val event = withTimeoutOrNull(remaining) { awaitPointerEvent() }
+                                val wait = engine.waitMs(SystemClock.uptimeMillis())
+                                val event = if (wait == null) awaitPointerEvent()
+                                else withTimeoutOrNull(wait) { awaitPointerEvent() }
+
                                 if (event == null) {
-                                    rightDown = true
-                                    connection.sendMouseClick(button = "right", action = "down")
+                                    engine.tick(SystemClock.uptimeMillis()).forEach(::perform)
                                     continue
                                 }
-                                latest = event.changes.maxOf { it.uptimeMillis }
-                                if (event.changes.count { it.pressed } >= 2) isScroll = true
 
-                                if (isScroll) {
-                                    // Two-finger drag scrolls (07 §4.6); consume so no
-                                    // other handler sees these changes.
+                                val primary = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull { it.pressed }
+                                val pressedCount = event.changes.count { it.pressed }
+
+                                if (primary == null) {
+                                    if (pressedCount == 0) break else continue
+                                }
+
+                                val actions = if (primary.pressed) {
                                     val dy = event.changes
                                         .filter { it.pressed }
                                         .sumOf { it.positionChange().y.toDouble() }
                                         .toFloat()
-                                    scrollAccum += dy
-                                    event.changes.forEach { if (it.pressed) it.consume() }
-                                    if (abs(scrollAccum) >= 48f) {
-                                        connection.sendScroll(
-                                            (scrollAccum / 48f).roundToInt().coerceIn(-5, 5)
-                                        )
-                                        scrollAccum = 0f
-                                    }
+                                    engine.move(
+                                        now = primary.uptimeMillis,
+                                        dx = primary.positionChange().x,
+                                        dy = dy,
+                                        pointerCount = pressedCount
+                                    )
                                 } else {
-                                    val change = event.changes.firstOrNull { it.id == down.id }
-                                        ?: event.changes.firstOrNull { it.pressed }
-                                    if (change == null) {
-                                        if (event.changes.none { it.pressed }) break else continue
-                                    }
-                                    val delta = change.positionChange()
-                                    val moved = abs(delta.x) + abs(delta.y) > slop
-                                    val heldFor = latest - downTime >= longPress
-
-                                    when {
-                                        dragged -> {
-                                            change.consume()
-                                            val dx = (delta.x * sensitivity).roundToInt()
-                                            val dy = (delta.y * sensitivity).roundToInt()
-                                            if (dx != 0 || dy != 0) connection.sendMouseMove(dx, dy)
-                                        }
-                                        rightDown -> change.consume() // right button held
-                                        moved -> {
-                                            dragged = true
-                                            change.consume()
-                                        }
-                                        heldFor -> {
-                                            // Long-press: right button down; release sends up.
-                                            rightDown = true
-                                            connection.sendMouseClick(button = "right", action = "down")
-                                            change.consume()
-                                        }
-                                        else -> change.consume()
-                                    }
+                                    engine.up(now = primary.uptimeMillis, pointerCount = pressedCount)
                                 }
-                                if (event.changes.none { it.pressed }) break
-                            }
+                                actions.forEach(::perform)
+                                event.changes.forEach { if (it.pressed) it.consume() }
 
-                            when {
-                                isScroll -> {} // scrolls already sent incrementally
-                                dragged -> {} // relative moves already sent; no button involved
-                                rightDown -> connection.sendMouseClick(button = "right", action = "up")
-                                else -> connection.sendMouseClick(button = "left", action = "click")
+                                if (event.changes.none { it.pressed } && engine.isIdle()) break
                             }
                         }
                     },
@@ -324,11 +314,3 @@ private fun DPadSurface(
         Row { dpadButton(Icons.Filled.KeyboardArrowDown, "Move cursor down") { connection.sendMouseMove(0, step) } }
     }
 }
-
-// Small helper so this file compiles standalone; in the real project just
-// import androidx.compose.runtime.collectAsState.
-@Composable
-private fun <T> kotlinx.coroutines.flow.StateFlow<T>.collectAsStateSafe() =
-    androidx.compose.runtime.produceState(initialValue = this.value, this) {
-        this@collectAsStateSafe.collect { value = it }
-    }
