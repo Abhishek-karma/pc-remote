@@ -61,19 +61,17 @@ Implemented:
 - Media keys (play/pause, next, prev, volume, mute)
 - Power actions (sleep, shutdown, restart, lock workstation), announcing
   `disconnecting` before an expected shutdown/restart
-- mDNS advertisement (`_pc-remote._tcp.`, via `Makaretu.Dns.Multicast`) —
-  see `docs/07-API-SPECIFICATION.md` §7
+- mDNS advertisement (`_pc-remote._tcp.`, via `Makaretu.Dns.Multicast`)
 - Live "N device(s) connected" counter in the console
 
-Not yet implemented (see the main project docs for design notes):
-- File transfer, screen mirroring, clipboard sync (F6–F8 features)
+Not yet implemented:
+- File transfer, screen mirroring, clipboard sync
 - A tray icon UI with a persistent "connected" indicator (currently a
-  console app — see `09-SECURITY-PRIVACY.md` §9)
+  console app)
 
 ## Next steps to harden this for real use
 
 1. Move from a console app to a system tray app so it can run quietly in the
    background and show pairing codes / connected-device status from a menu.
 2. Wrap each `HandleCommand` dispatch individually so one bad command logs
-   and continues rather than ending the connection
-   (`10-ERROR-HANDLING.md` §4).
+   and continues rather than ending the connection.

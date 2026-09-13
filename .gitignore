@@ -26,6 +26,15 @@ Thumbs.db
 
 # NuGet/package caches
 packages/
-# Agent-skills tooling (not part of the product)
+
+# --- Development-only tooling (not part of the product) ---
 .agents/
 skills-lock.json
+.claude/
+
+# --- Local-only documentation (specs kept out of the public repository) ---
+docs/
+
+# --- Signing material (never commit) ---
+*.jks
+*.keystore

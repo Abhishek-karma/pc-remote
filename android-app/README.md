@@ -29,8 +29,6 @@ which is requested at runtime when a session starts:
 - No cleartext: the app only connects to `wss://` (`usesCleartextTraffic` is
   off by manifest).
 
-See `docs/09-SECURITY-PRIVACY.md` §7 for the full justification list.
-
 ## Files
 
 - `network/RemoteConnection.kt` — OkHttp WebSocket client, pairing/auth
@@ -47,21 +45,20 @@ See `docs/09-SECURITY-PRIVACY.md` §7 for the full justification list.
   tap for left-click, long-press for right-click, plus explicit Left/Right
   buttons; sensitivity comes from Settings.
 - `ui/KeyboardScreen.kt` / `ui/MediaScreen.kt` / `ui/PowerScreen.kt` /
-  `ui/SettingsScreen.kt` — the control screens (see `docs/04-UI-UX-SPECIFICATION.md`
-  §5–§7): modifier-lock, hold-to-repeat volume, `AlertDialog`-confirmed
-  shutdown, and paired-PC/sensitivity settings.
+  `ui/SettingsScreen.kt` — the control screens: modifier-lock,
+  hold-to-repeat volume, `AlertDialog`-confirmed shutdown, and
+  paired-PC/sensitivity settings.
 - `ui/theme/Theme.kt` — the app's dark-first custom palette.
 - `MainActivity.kt` — wires everything: Pairing ↔ bottom-nav ControlHub
   (Touchpad/Keyboard/Media/Power) with Settings reachable from the title row.
 
-## Not yet implemented here (see main docs)
+## Not yet implemented here
 
-- Compose Navigation (`05` §4 planned addition) — the bottom nav is
-  remembered-tab state in `MainActivity`.
+- Compose Navigation — the bottom nav is remembered-tab state in
+  `MainActivity`.
 - Reconnect-attempt ceiling (auto-retry currently runs while the token is
-  valid; a ~5-minute cap with a manual Retry fallback is planned, `10` §5).
-- TalkBack end-to-end verification on every screen
-  (`13-ACCESSIBILITY.md` §6 audit).
+  valid; a ~5-minute cap with a manual Retry fallback is planned).
+- TalkBack end-to-end verification on every screen.
 
 ## Try it end to end
 

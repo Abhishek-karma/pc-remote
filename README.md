@@ -1,22 +1,43 @@
 # PC Remote
 
-Remote-control a Windows PC from an Android phone, on your local network
-only. **No cloud, no telemetry, no accounts** — the phone talks directly to
-the PC over WSS.
+Remote control for your Windows PC from an Android device. Designed for the
+local network: **no cloud, no accounts, no telemetry** — the phone connects
+directly to the PC over an encrypted WebSocket (WSS) connection.
 
-- **Windows agent** (`windows-agent/`) — .NET 8 console app: TLS WebSocket
-  server (self-signed cert, no admin rights), pairing codes that rotate
-  every 5 minutes, DPAPI-persisted trust tokens, Win32 mouse/keyboard/media/
-  power control, mDNS advertisement (`_pc-remote._tcp.local.`).
-- **Android app** (`android-app/`) — Kotlin/Jetpack Compose: mDNS discovery +
-  manual pairing, WSS with per-host certificate pinning (trust-on-first-use),
-  auto-reconnect, touchpad (gestures + D-pad accessible mode), keyboard,
-  media, power (confirmed destructive actions), settings.
+## Components
 
-## Quickstart
+**Windows agent** (`windows-agent/`) — .NET 8 application that
+
+- serves a TLS WebSocket endpoint with a self-signed certificate (no
+  administrator rights required),
+- pairs devices with 6-digit codes that rotate every five minutes,
+- persists trusted devices using DPAPI encryption,
+- controls mouse, keyboard, media, and power via the Win32 API,
+- advertises itself via mDNS (`_pc-remote._tcp.local.`) for automatic
+  discovery.
+
+**Android app** (`android-app/`) — Kotlin / Jetpack Compose client that
+
+- discovers PCs via mDNS, with manual IP entry as a fallback,
+- pins the agent's certificate on first pairing (trust-on-first-use),
+- reconnects automatically after interruptions,
+- provides a touchpad (gesture and accessible D-pad modes), keyboard, media,
+  and power controls — destructive power actions require confirmation.
+
+## Requirements
+
+- Windows 10/11 for the agent (the published build is self-contained; no
+  .NET runtime installation is needed)
+- Android 8.0+ (API 26) for the app
+
+## Installation
+
+Download `PC-Remote-Agent-win-x64.exe` and `PC-Remote-Android.apk` from the
+[latest GitHub Release](../../releases) and verify them against
+`SHA256SUMS.txt`. Building from source:
 
 ```bash
-# Windows agent (no admin required, first run creates %AppData%\PcRemoteAgent\)
+# Windows agent
 cd windows-agent
 dotnet run
 
@@ -25,30 +46,31 @@ cd android-app
 ./gradlew :app:installDebug   # or open in Android Studio
 ```
 
-Open the app, tap your PC in "Discover nearby PC", enter the 6-digit pairing
-code from the agent console. The firewall needs TCP 58642 (and UDP 5353 for
-mDNS) allowed inbound — see `windows-agent/README.md`.
+## Getting connected
+
+1. Run the agent. Allow **TCP 58642** (WebSocket) and **UDP 5353** (mDNS)
+   through the Windows Firewall — see `windows-agent/README.md` for the
+   manual rules.
+2. Open the app and tap your PC under "Discover nearby PC".
+3. Enter the 6-digit pairing code shown in the agent console (also written
+   to its log file).
+
+## Releases
+
+Pushing a `v*` tag (e.g. `v1.0.0`) triggers a GitHub Actions workflow that
+builds and tests both platforms, smoke-tests the agent, and attaches the
+Windows executable and Android APK with SHA-256 checksums to a GitHub
+Release. The Windows build is self-contained (no .NET runtime required);
+the Android APK is signed when signing secrets are configured and clearly
+named unsigned otherwise.
 
 ## Documentation
 
-The `docs/` folder is the single source of truth: start at
-[`docs/00-README.md`](docs/00-README.md), then
-[`02-FEATURE-SPECIFICATION.md`](docs/02-FEATURE-SPECIFICATION.md) (features),
-[`07-API-SPECIFICATION.md`](docs/07-API-SPECIFICATION.md) (wire protocol), and
-[`09-SECURITY-PRIVACY.md`](docs/09-SECURITY-PRIVACY.md) (trust model).
+Detailed design and specification documents (product requirements, feature
+and API specs, security model, deployment pipeline, and so on) are
+maintained locally and intentionally kept out of this repository.
 
-## Status
+## Scope
 
-Early-development M1/M2, fully building and tested (agent: 17 xUnit tests
-incl. a WSS integration test; app: unit + Compose instrumented tests, plus a
-live LAN E2E scenario). Security blockers from the release checklist are
-closed (WSS + TOFU pinning, encrypted storage on both sides, rotating codes).
-Remaining roadmap: clipboard sync / file transfer / screen mirroring
-(docs `02` F6–F8), a tray app for the agent, and the CI pipelines being
-exercised against this repository.
-
-## License / scope
-
-Personal tool, local-network-only by design. See
-[`docs/01-PRODUCT-REQUIREMENTS.md`](docs/01-PRODUCT-REQUIREMENTS.md) for
-non-goals.
+A personal tool, intentionally limited to the local network: no cloud relay,
+no remote access over the internet, no telemetry, no accounts.

@@ -8,6 +8,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>PcRemoteAgent</RootNamespace>
     <AssemblyName>PcRemoteAgent</AssemblyName>
+    <!-- Release CI overrides with -p:Version=<git tag>; keep in sync with
+         android-app's versionName (docs/15-DEPLOYMENT.md §3). -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Product>PC Remote Agent</Product>
     <!-- The agent is Windows-only by design (docs/01-PRODUCT-REQUIREMENTS.md
          non-goals), so CA1416 (platform-specific API) is not actionable. -->
     <NoWarn>$(NoWarn);CA1416</NoWarn>

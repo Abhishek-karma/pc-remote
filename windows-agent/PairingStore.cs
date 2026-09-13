@@ -25,7 +25,7 @@ public class PairingStore
     private static string AppDataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PcRemoteAgent");
 
-    private static string DefaultTokensFile => Path.Combine(AppDataDir, "trusted-devices.json");
+    internal static string DefaultTokensFile => Path.Combine(AppDataDir, "trusted-devices.json");
 
     public PairingStore() : this(null) { }
 

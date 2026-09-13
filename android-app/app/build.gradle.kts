@@ -12,15 +12,39 @@ android {
         applicationId = "com.example.pcremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI injects these from the Git tag (docs/15-DEPLOYMENT.md §3).
+        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            // Signing material comes from env vars only — never committed
+            // (ANDROID_KEYSTORE_FILE/PASSWORD, ANDROID_KEY_ALIAS/KEY_PASSWORD;
+            // docs/15-DEPLOYMENT.md §5). Unset → release builds are unsigned.
+            val storePath = System.getenv("ANDROID_KEYSTORE_FILE")
+            if (!storePath.isNullOrBlank()) {
+                storeFile = file(storePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (!System.getenv("ANDROID_KEYSTORE_FILE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
+    }
+
+    // Product-friendly APK names (PC-Remote-Android-release.apk).
+    base {
+        archivesName = "PC-Remote-Android"
     }
 
     compileOptions {
@@ -51,8 +75,7 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
-    // Proper vector icons for the nav bar / controls; R8 tree-shakes unused
-    // icons out of release builds (minify enabled there).
+    // Proper vector icons for the nav bar / controls (revisit size impact if R8 is enabled).
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")

@@ -120,6 +120,16 @@ public class PairingStoreTests : IDisposable
         Assert.True(File.Exists(_tempFile));
         Assert.True(new FileInfo(_tempFile).Length > 8);
     }
+
+    [Fact]
+    public void DefaultTokensFileLivesUnderAppData()
+    {
+        // Mutable state must live under %AppData%, never beside the exe (Program Files installs).
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        Assert.Equal(
+            Path.Combine(appData, "PcRemoteAgent", "trusted-devices.json"),
+            PairingStore.DefaultTokensFile);
+    }
 }
 
 public class RemoteMessageTests

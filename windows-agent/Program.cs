@@ -19,6 +19,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -44,24 +45,34 @@ public static class Program
 
         Console.WriteLine("=== PC Remote Agent ===");
         Console.WriteLine($"Listening on port {Port} (WSS)");
+        // InformationalVersion carries CI suffixes (e.g. 1.0.0-ci.42).
+        var infoVersion = System.Reflection.Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        Console.WriteLine($"Version {infoVersion ?? typeof(Program).Assembly.GetName().Version?.ToString()}");
 
         // Fresh pairing code, then auto-rotate every 5 minutes (09-SECURITY-PRIVACY.md §3).
         var pairingCode = Pairing.GeneratePairingCode();
         Console.WriteLine($"Pairing code (valid 5 minutes, auto-refreshes): {pairingCode}");
-        var rotation = Task.Run(async () =>
+
+        using var shutdown = new CancellationTokenSource();
+        _ = Task.Run(async () =>
         {
-            while (true)
+            try
             {
-                await Task.Delay(PairingStore.CodeLifetime);
-                if (!Pairing.IsCodeExpired()) continue; // already refreshed elsewhere
-                lock (Pairing)
+                while (!shutdown.IsCancellationRequested)
                 {
-                    if (!Pairing.IsCodeExpired()) continue;
-                    var fresh = Pairing.GeneratePairingCode();
-                    Console.WriteLine($"[code] Pairing code refreshed: {fresh}");
+                    await Task.Delay(PairingStore.CodeLifetime, shutdown.Token);
+                    if (!Pairing.IsCodeExpired()) continue; // already refreshed elsewhere
+                    lock (Pairing)
+                    {
+                        if (!Pairing.IsCodeExpired()) continue;
+                        var fresh = Pairing.GeneratePairingCode();
+                        Console.WriteLine($"[code] Pairing code refreshed: {fresh}");
+                    }
                 }
             }
-        });
+            catch (OperationCanceledException) { /* shutdown requested */ }
+        }, CancellationToken.None);
 
         Console.WriteLine("Local IP addresses to enter manually if discovery fails:");
         foreach (var ip in GetLocalIPv4Addresses())
@@ -85,18 +96,35 @@ public static class Program
         var listener = new TcpListener(IPAddress.Any, Port);
         listener.Start();
 
+        // Graceful shutdown; idempotent — ProcessExit can fire alongside CancelKeyPress.
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;
-            MdnsAdvertiser.Stop();
-            Environment.Exit(0);
+            RequestShutdown(shutdown, listener, "Ctrl+C");
         };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RequestShutdown(shutdown, listener, "process exit");
 
-        while (true)
+        try
         {
-            var client = await listener.AcceptTcpClientAsync();
-            _ = Task.Run(() => HandleConnectionAsync(client, cert));
+            while (!shutdown.IsCancellationRequested)
+            {
+                var client = await listener.AcceptTcpClientAsync(shutdown.Token);
+                _ = Task.Run(() => HandleConnectionAsync(client, cert));
+            }
         }
+        catch (OperationCanceledException) { /* shutdown requested */ }
+
+        Console.WriteLine("[*] Shutting down");
+        MdnsAdvertiser.Stop();
+        listener.Stop();
+    }
+
+    private static void RequestShutdown(CancellationTokenSource shutdown, TcpListener listener, string reason)
+    {
+        if (shutdown.IsCancellationRequested) return;
+        Console.WriteLine($"[*] Shutdown requested ({reason})");
+        try { listener.Stop(); } catch { /* already stopped */ }
+        shutdown.Cancel();
     }
 
     internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
@@ -139,6 +167,8 @@ public static class Program
                         }
                         else
                         {
+                            // Never log the attempted token or pairing code (14 §3).
+                            Console.WriteLine($"[!] {clientIp} authentication failed");
                             await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage { Type = "auth_failed" }));
                         }
                         continue;

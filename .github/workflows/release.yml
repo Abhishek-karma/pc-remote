@@ -1,0 +1,190 @@
+name: release
+
+# Tag-triggered release: build + validate both platforms, then publish the
+# GitHub Release with checksums. A failed platform blocks the release
+# (docs/15-DEPLOYMENT.md §5).
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows agent
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Compute version from tag
+        id: ver
+        shell: pwsh
+        run: echo "version=$($env:GITHUB_REF_NAME -replace '^v','')" >> $env:GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore PcRemoteAgent.csproj
+      - name: Build
+        run: dotnet build PcRemoteAgent.csproj --no-restore --nologo
+      - name: Test
+        run: dotnet test PcRemoteAgent.Tests/PcRemoteAgent.Tests.csproj --no-restore --nologo
+
+      # v1.2.3 -> version 1.2.3 (docs/15-DEPLOYMENT.md §3).
+      - name: Publish win-x64 (self-contained single-file)
+        shell: pwsh
+        run: >
+          dotnet publish PcRemoteAgent.csproj -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false
+          -p:Version="$env:RELEASE_VERSION" --nologo
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: Validate and stage executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item bin/Release/net8.0/win-x64/publish/PcRemoteAgent.exe dist/PC-Remote-Agent-win-x64.exe
+          $exe = Get-Item dist/PC-Remote-Agent-win-x64.exe
+          if ($exe.Length -lt 10MB) { throw "published exe is unexpectedly small ($($exe.Length) bytes)" }
+          # Smoke: start, confirm the WSS port binds, stop (listen-only — no input injected).
+          $proc = Start-Process (Resolve-Path dist/PC-Remote-Agent-win-x64.exe) -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..20) {
+              Start-Sleep -Seconds 1
+              $ok = (Test-NetConnection -ComputerName 127.0.0.1 -Port 58642 -WarningAction SilentlyContinue).TcpTestSucceeded
+              if ($ok) { break }
+            }
+            if (-not $ok) { throw "agent did not open port 58642 within 20s" }
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc-remote-windows-agent-win-x64
+          path: windows-agent/dist/PC-Remote-Agent-win-x64.exe
+          if-no-files-found: error
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    outputs:
+      signed: ${{ steps.signing_status.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so versionCode = commit count is deterministic.
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/wrapper-validation@v4
+
+      - name: Compute version from tag
+        id: ver
+        run: |
+          echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "code=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Decode signing keystore from secrets
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret set — building an UNSIGNED release APK"
+          fi
+
+      - id: signing_status
+        run: echo "signed=${{ steps.keystore.outputs.available }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: >
+          ./gradlew clean :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+          -PversionName=${{ steps.ver.outputs.name }}
+          -PversionCode=${{ steps.ver.outputs.code }}
+          --no-daemon
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ steps.keystore.outputs.available == 'true' && format('{0}/release.keystore', runner.temp) || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Validate and stage APK
+        run: |
+          mkdir -p dist
+          if [ "${{ steps.keystore.outputs.available }}" = "true" ]; then
+            apk="app/build/outputs/apk/release/PC-Remote-Android-release.apk"
+            [ -s "$apk" ] || { echo "missing or empty: $apk"; exit 1; }
+            cp "$apk" dist/PC-Remote-Android.apk
+          else
+            apk="app/build/outputs/apk/release/PC-Remote-Android-release-unsigned.apk"
+            [ -s "$apk" ] || { echo "missing or empty: $apk"; exit 1; }
+            cp "$apk" dist/PC-Remote-Android-unsigned.apk
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc-remote-android
+          path: android-app/dist/
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist
+          sha256sum PC-Remote-Agent-win-x64.exe PC-Remote-Android*.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SIGNED: ${{ needs.android.outputs.signed }}
+        run: |
+          {
+            echo "PC Remote $TAG"
+            echo ""
+            echo "## Windows"
+            echo "- \`PC-Remote-Agent-win-x64.exe\` — self-contained single-file agent (win-x64), no .NET runtime install needed."
+            echo ""
+            echo "## Android"
+            echo "- \`PC-Remote-Android.apk\` — Android app"
+            if [ "$SIGNED" != "true" ]; then
+              echo "- **Note: this APK is unsigned** (no signing secrets configured) — install only for internal verification, not a production-signed release."
+            fi
+            echo ""
+            echo "## Security"
+            echo "- Local-network only; WSS (TLS) mandatory, no plaintext fallback."
+            echo "- Trust-on-first-use certificate pinning; pairing codes rotate every 5 minutes."
+            echo ""
+            echo "## Verification"
+            echo "- SHA-256 checksums: \`SHA256SUMS.txt\`"
+          } > notes.md
+          gh release create "$TAG" --title "PC Remote $TAG" --notes-file notes.md dist/*

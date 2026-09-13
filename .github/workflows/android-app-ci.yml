@@ -2,9 +2,10 @@ name: android-app-ci
 
 on:
   push:
-    paths: ['android-app/**']
+    branches: [main]
+    paths: ['android-app/**', '.github/workflows/android-app-ci.yml']
   pull_request:
-    paths: ['android-app/**']
+    paths: ['android-app/**', '.github/workflows/android-app-ci.yml']
 
 jobs:
   build-test:
@@ -18,9 +19,35 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+      # Fails the build if the wrapper jar/checksums were tampered with.
+      - uses: gradle/actions/wrapper-validation@v4
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
-        # Instrumented tests need a device/emulator; those run in the manual
-        # pre-release pass (docs/11-TESTING-STRATEGY.md §4-5).
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+      # Release must always compile; without signing secrets this is an
+      # explicitly unsigned build (docs/15-DEPLOYMENT.md §5).
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --no-daemon
+      - name: Validate APKs
+        run: |
+          debug_apk="app/build/outputs/apk/debug/PC-Remote-Android-debug.apk"
+          release_apk="app/build/outputs/apk/release/PC-Remote-Android-release-unsigned.apk"
+          for apk in "$debug_apk" "$release_apk"; do
+            [ -s "$apk" ] || { echo "missing or empty: $apk"; ls app/build/outputs/apk/*/* || true; exit 1; }
+          done
+
+      - name: Upload debug APK artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-remote-android-debug
+          path: android-app/app/build/outputs/apk/debug/PC-Remote-Android-debug.apk
+          if-no-files-found: error
+      - name: Upload unsigned release APK artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-remote-android-release-unsigned
+          path: android-app/app/build/outputs/apk/release/PC-Remote-Android-release-unsigned.apk
+          if-no-files-found: error
