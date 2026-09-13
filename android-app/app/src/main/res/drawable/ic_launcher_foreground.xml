@@ -1,30 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Launcher foreground: a minimal mouse glyph in the app's amber accent.
-     108dp viewport, with the glyph kept inside the ~66dp safe circle so
-     launcher masks never clip it. -->
+<!-- Launcher foreground: precision remote trackpad/mouse glyph in Electric Cyan.
+     108dp viewport, with the glyph kept inside the 66dp safe circle. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Mouse body: vertical capsule, centered -->
+    <!-- Outer precision frame: centered rounded container -->
     <path
-        android:fillColor="#E8B45A"
-        android:pathData="M54,26 a19,19 0 0 1 19,19 v18 a19,19 0 0 1 -19,19 a19,19 0 0 1 -19,-19 v-18 a19,19 0 0 1 19,-19 z" />
+        android:fillColor="#151B22"
+        android:pathData="M35,28 h38 a8,8 0 0 1 8,8 v36 a8,8 0 0 1 -8,8 h-38 a8,8 0 0 1 -8,-8 v-36 a8,8 0 0 1 8,-8 z" />
 
-    <!-- Upper section slightly brighter to suggest the top shell -->
+    <!-- Cyan border accent -->
     <path
-        android:fillColor="#F3D28C"
-        android:pathData="M54,26 a19,19 0 0 1 19,19 v3 h-38 v-3 a19,19 0 0 1 19,-19 z" />
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="2"
+        android:pathData="M35,28 h38 a8,8 0 0 1 8,8 v36 a8,8 0 0 1 -8,8 h-38 a8,8 0 0 1 -8,-8 v-36 a8,8 0 0 1 8,-8 z" />
 
-    <!-- Split line between top shell and body -->
+    <!-- Top Touchpad surface subtle divider -->
     <path
-        android:fillColor="#0E1216"
-        android:pathData="M35,46 h38 v3 h-38 z" />
+        android:fillColor="#00E5FF"
+        android:pathData="M34,58 h40 v2 h-40 z" />
 
-    <!-- Scroll wheel -->
+    <!-- Left / Right Click Deck divider -->
     <path
-        android:fillColor="#241B05"
-        android:pathData="M51.5,32 h5 a2.5,2.5 0 0 1 2.5,2.5 v7 a2.5,2.5 0 0 1 -2.5,2.5 h-5 a2.5,2.5 0 0 1 -2.5,-2.5 v-7 a2.5,2.5 0 0 1 2.5,-2.5 z" />
+        android:fillColor="#00E5FF"
+        android:pathData="M53,60 h2 v20 h-2 z" />
+
+    <!-- Precision Reticle Crosshair in Trackpad area -->
+    <path
+        android:fillColor="#38EFFF"
+        android:pathData="M52,42 h4 v4 h-4 z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M48,43.5 h3 v1 h-3 z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M57,43.5 h3 v1 h-3 z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M53.5,38 h1 v3 h-1 z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M53.5,47 h1 v3 h-1 z" />
+
+    <!-- Radio / Wi-Fi broadcast wave at top right corner -->
+    <path
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M70,33 a4,4 0 0 1 3,3" />
+    <path
+        android:strokeColor="#38EFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M67,36 a1,1 0 0 1 1,1" />
 </vector>

@@ -1,25 +1,44 @@
 package com.example.pcremote.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,10 +48,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.DiscoveredPc
 import com.example.pcremote.network.DiscoveryService
@@ -43,16 +66,14 @@ import com.example.pcremote.network.SettingsStore
 import com.example.pcremote.network.TokenStore
 import com.example.pcremote.ui.components.EmptyState
 import com.example.pcremote.ui.components.PcCard
-import com.example.pcremote.ui.components.SectionHeader
-import com.example.pcremote.ui.theme.Spacing
-import com.example.pcremote.ui.theme.TouchTarget
+import com.example.pcremote.ui.theme.RemoteColors
 import kotlinx.coroutines.delay
 
 /**
- * Pairing screen (04 §8): discovery list of PC cards with explicit states
- * (searching / found / empty / failed), manual entry as a secondary section,
- * and validation. Security behavior unchanged: a never-paired discovered PC
- * only prefills the form — pairing always requires the code (09 §3).
+ * Production-ready Pairing & Discovery Screen:
+ * - Direct local Wi-Fi scan with live discovery status
+ * - Fast reconnect for known PCs; clear pairing code flow for new PCs
+ * - Structured manual IP connection deck with validation
  */
 @Composable
 fun PairingScreen(
@@ -75,8 +96,6 @@ fun PairingScreen(
 
     val snapshot by discovery.snapshot.collectAsStateSafe()
 
-    // Discovery keeps listening; after a grace period with no results, surface
-    // the empty state while the browse continues in the background.
     var showEmpty by remember { mutableStateOf(false) }
     LaunchedEffect(snapshot.status) {
         if (snapshot.status == DiscoveryStatus.SEARCHING) {
@@ -96,10 +115,10 @@ fun PairingScreen(
     fun onPcSelected(pc: DiscoveredPc) {
         host = pc.host
         if (tokenStore.getToken(pc.host) != null) {
-            // Previously paired: reconnect directly, no code prompt (09 §3).
+            // Previously paired: reconnect directly
             connection.connect(host = pc.host, pairingCode = null)
         } else {
-            // Unknown host: only prefill — pairing still needs the code.
+            // Unknown host: prefill and prompt for pairing code
             pairingCode = ""
             showManual = true
         }
@@ -111,110 +130,247 @@ fun PairingScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.xxl, vertical = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.lg)
+            .padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        Text("Connect to your PC", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            "Make sure PC Remote is running on your Windows PC.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        // --- Discovery ---
-        SectionHeader("Your PCs")
-        when {
-            snapshot.status == DiscoveryStatus.FAILED -> EmptyState(
-                icon = Icons.Outlined.Computer,
-                title = "Couldn't scan for PCs",
-                body = "Discovery is blocked on this network. You can still connect manually.",
-                ctaLabel = "Try again",
-                onCta = { discovery.start() }
-            )
-            snapshot.pcs.isEmpty() && showEmpty -> EmptyState(
-                icon = Icons.Outlined.Computer,
-                title = "No PCs found yet",
-                body = "Make sure:\n\u2022 PC Remote is running on the PC\n\u2022 Both devices are on the same network",
-                ctaLabel = "Scan again",
-                onCta = { discovery.start() }
-            )
-            else -> {
-                Row(
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-                ) {
-                    if (snapshot.status == DiscoveryStatus.SEARCHING) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text(
-                            "Finding PCs nearby…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                snapshot.pcs.forEach { pc ->
-                    PcCard(
-                        pc = pc,
-                        displayName = settingsStore.getName(pc.host) ?: pc.displayName,
-                        isPaired = tokenStore.getToken(pc.host) != null,
-                        onClick = { onPcSelected(pc) }
-                    )
-                }
-            }
-        }
-
-        // --- Manual connection (secondary) ---
-        if (!showManual) {
-            TextButton(onClick = { showManual = true }) { Text("Connect manually") }
-        } else {
-            SectionHeader("Manual connection")
-            OutlinedTextField(
-                value = host,
-                onValueChange = { host = it.trim() },
-                label = { Text("PC address") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = pairingCode,
-                onValueChange = { pairingCode = it.take(6).filter { c -> c.isDigit() } },
-                label = { Text("Pairing code (first time only)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = {
-                    connection.connect(host = host, pairingCode = pairingCode.ifBlank { null })
-                },
-                enabled = host.isNotBlank() && !connecting,
-                modifier = Modifier.fillMaxWidth().heightIn(min = TouchTarget.control)
+        // App Brand Hero Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
             ) {
-                if (connecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                } else {
-                    Text("Connect")
-                }
+                Icon(
+                    Icons.Outlined.Computer,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
             }
-            if (connState == ConnectionState.FAILED) {
+            Column {
                 Text(
-                    "Couldn't connect — check the address and pairing code.",
+                    text = "PC Remote",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Direct encrypted local Wi-Fi control",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
+        // --- DISCOVERY SECTION ---
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "NEARBY WORKSTATIONS",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            letterSpacing = 1.2.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (snapshot.status == DiscoveryStatus.SEARCHING) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = { discovery.start() },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Refresh Discovery",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            when {
+                snapshot.status == DiscoveryStatus.FAILED -> {
+                    EmptyState(
+                        icon = Icons.Outlined.Computer,
+                        title = "Discovery scan blocked",
+                        body = "mDNS broadcast is restricted on this network. Connect manually below using your PC's IP address.",
+                        ctaLabel = "Retry Scan",
+                        onCta = { discovery.start() }
+                    )
+                }
+                snapshot.pcs.isEmpty() && showEmpty -> {
+                    EmptyState(
+                        icon = Icons.Outlined.Wifi,
+                        title = "No workstations detected",
+                        body = "Ensure the PC Remote Server is running on your Windows PC and both devices share the same local Wi-Fi.",
+                        ctaLabel = "Scan Again",
+                        onCta = { discovery.start() }
+                    )
+                }
+                snapshot.pcs.isNotEmpty() -> {
+                    snapshot.pcs.forEach { pc ->
+                        PcCard(
+                            pc = pc,
+                            displayName = settingsStore.getName(pc.host) ?: pc.displayName,
+                            isPaired = tokenStore.getToken(pc.host) != null,
+                            onClick = { onPcSelected(pc) }
+                        )
+                    }
+                }
+                else -> {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Scanning local subnet for Windows PCs…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- MANUAL CONNECTION SECTION ---
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showManual = !showManual },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Connect by IP Address",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                    Text(
+                        text = if (showManual) "Hide" else "Show",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (showManual) {
+                    OutlinedTextField(
+                        value = host,
+                        onValueChange = { host = it.trim() },
+                        label = { Text("PC IP Address (e.g. 192.168.1.50)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = pairingCode,
+                        onValueChange = { pairingCode = it.take(6).filter { c -> c.isDigit() } },
+                        label = { Text("Pairing Code (6 digits, first time)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Button(
+                        onClick = {
+                            connection.connect(host = host, pairingCode = pairingCode.ifBlank { null })
+                        },
+                        enabled = host.isNotBlank() && !connecting,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                    ) {
+                        if (connecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            Text("Connect to Workstation", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    if (connState == ConnectionState.FAILED) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = RemoteColors.ErrorContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Unable to establish connection. Verify the IP address, pairing code, and PC firewall permissions.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = RemoteColors.Error,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-// Small helper so this file compiles standalone; in the real project just
-// import androidx.compose.runtime.collectAsState from androidx.lifecycle-runtime-compose.
 @Composable
 private fun <T> kotlinx.coroutines.flow.StateFlow<T>.collectAsStateSafe() =
     androidx.compose.runtime.produceState(initialValue = this.value, this) {

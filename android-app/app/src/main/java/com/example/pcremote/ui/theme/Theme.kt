@@ -57,8 +57,8 @@ private val RemoteLightScheme = lightColorScheme(
 /** Theme-dependent status colors beyond the Material scheme (success/pending). */
 data class StatusPalette(val positive: Color, val pending: Color)
 
-private val DarkStatusPalette = StatusPalette(RemoteColors.Positive, RemoteColors.OnSurfaceVariant)
-private val LightStatusPalette = StatusPalette(RemoteColors.LightPositive, RemoteColors.OnSurfaceVariant)
+private val DarkStatusPalette = StatusPalette(RemoteColors.Positive, RemoteColors.Warning)
+private val LightStatusPalette = StatusPalette(RemoteColors.LightPositive, Color(0xFFD97706))
 
 val LocalStatusPalette = staticCompositionLocalOf { DarkStatusPalette }
 

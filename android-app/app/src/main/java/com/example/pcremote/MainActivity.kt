@@ -41,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.EncryptedPrefs
@@ -187,17 +188,15 @@ private fun ControlHub(
                 connection = connection,
                 state = connState,
                 onStatusClick = { showDetails = true },
-                actions = {
-                    RemoteIconButton(
-                        icon = Icons.Filled.Settings,
-                        contentDescription = "Settings",
-                        onClick = { showSettings = true }
-                    )
-                }
+                onSettingsClick = { showSettings = true },
+                onSwitchPcClick = { showDetails = true }
             )
         },
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceVariant) {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
+            ) {
                 AppScreen.entries.forEach { destination ->
                     val selected = destination == screen && !showSettings
                     NavigationBarItem(
@@ -214,10 +213,11 @@ private fun ControlHub(
                                 AppScreen.Power -> Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
                             }
                         },
-                        label = { Text(destination.label) },
+                        label = { Text(destination.label, fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
                             selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -246,8 +246,14 @@ private fun ControlHub(
                             hapticsEnabled = haptics,
                             settingsStore = settingsStore
                         )
-                        AppScreen.Keyboard -> KeyboardScreen(connection)
-                        AppScreen.Media -> MediaScreen(connection)
+                        AppScreen.Keyboard -> KeyboardScreen(
+                            connection = connection,
+                            hapticsEnabled = haptics
+                        )
+                        AppScreen.Media -> MediaScreen(
+                            connection = connection,
+                            hapticsEnabled = haptics
+                        )
                         AppScreen.Power -> PowerScreen(
                             connection = connection,
                             pcName = pcName,
