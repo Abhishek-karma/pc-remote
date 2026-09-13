@@ -50,7 +50,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item bin/Release/net8.0/win-x64/publish/PcRemoteAgent.exe dist/PC-Remote-Agent-win-x64.exe
+          # TFM-scoped path (net8.0-windows) — match any TFM to survive upgrades.
+          $published = Get-ChildItem "bin/Release/*/win-x64/publish/PcRemoteAgent.exe" | Select-Object -First 1
+          if (-not $published) { throw "published PcRemoteAgent.exe not found" }
+          Copy-Item $published.FullName dist/PC-Remote-Agent-win-x64.exe
           $exe = Get-Item dist/PC-Remote-Agent-win-x64.exe
           if ($exe.Length -lt 10MB) { throw "published exe is unexpectedly small ($($exe.Length) bytes)" }
           # Smoke: start, confirm the WSS port binds, stop (listen-only — no input injected).
