@@ -200,6 +200,7 @@ public static class Program
             var authDeadline = DateTime.UtcNow.AddSeconds(15);
             var messageCount = 0;
             var windowStart = DateTime.UtcNow;
+            var muteUntil = DateTime.MinValue;
 
             while (true)
             {
@@ -221,7 +222,14 @@ public static class Program
                 messageCount++;
                 if (messageCount > 150)
                 {
-                    await Task.Delay(10);
+                    muteUntil = now.AddSeconds(1);
+                    messageCount = 0;
+                    windowStart = now.AddSeconds(1);
+                }
+
+                if (DateTime.UtcNow < muteUntil)
+                {
+                    continue;
                 }
 
                 RemoteMessage? msg;
@@ -384,12 +392,11 @@ public static class Program
                 break;
 
             case "key_press":
-                if (string.IsNullOrEmpty(msg.Key))
+                if (string.IsNullOrEmpty(msg.Key) || !Win32Input.SendKey(msg.Key, msg.Modifiers ?? []))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "bad_field");
                     return;
                 }
-                Win32Input.SendKey(msg.Key, msg.Modifiers ?? []);
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
@@ -637,19 +644,27 @@ public static class Win32Input
         ["F24"] = 0x87,
     };
 
-    public static void SendKey(string key, List<string> modifiers)
+    public static bool SendKey(string key, List<string> modifiers)
     {
-        var modifierVks = modifiers.Select(m => VkMap.GetValueOrDefault(m, (ushort)0)).Where(v => v != 0).ToList();
+        if (string.IsNullOrWhiteSpace(key) || modifiers.Count > 8) return false;
+        var modifierVks = new List<ushort>();
+        foreach (var m in modifiers)
+        {
+            if (!VkMap.TryGetValue(m, out var mVk) || mVk == 0) return false;
+            modifierVks.Add(mVk);
+        }
+
         if (!VkMap.TryGetValue(key, out var vk))
         {
-            if (key.Length == 1) vk = (ushort)char.ToUpper(key[0]);
-            else return;
+            if (key.Length == 1 && char.IsLetterOrDigit(key[0])) vk = (ushort)char.ToUpper(key[0]);
+            else return false;
         }
 
         foreach (var m in modifierVks) keybd_event((byte)m, 0, 0, IntPtr.Zero);
         keybd_event((byte)vk, 0, 0, IntPtr.Zero);
         keybd_event((byte)vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
         foreach (var m in modifierVks) keybd_event((byte)m, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+        return true;
     }
 
     public static void TypeText(string text)

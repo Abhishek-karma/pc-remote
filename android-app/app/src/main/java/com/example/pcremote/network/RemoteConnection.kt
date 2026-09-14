@@ -196,6 +196,7 @@ class RemoteConnection(
                         activeTrustManagers[host]?.pendingFingerprint?.let { fingerprint ->
                             pinStore.recordPin(host, fingerprint)
                         }
+                        activeTrustManagers[host]?.clearPending()
                         msg.token?.let { tokenStore.saveToken(host, it) }
                         msg.pcName?.let { onPcName?.invoke(host, it) }
                         authFailed = false
@@ -203,6 +204,7 @@ class RemoteConnection(
                         _state.value = ConnectionState.CONNECTED
                     }
                     "auth_failed" -> {
+                        activeTrustManagers[host]?.clearPending()
                         authFailed = true
                         _state.value = ConnectionState.FAILED
                     }
@@ -211,6 +213,7 @@ class RemoteConnection(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                activeTrustManagers[host]?.clearPending()
                 if (intentionallyClosed || expectedDisconnect) {
                     _state.value = ConnectionState.DISCONNECTED
                 } else if (t.isCertificateProblem()) {
@@ -322,6 +325,10 @@ internal class PinningTrustManager(private val pinStore: PinStore, private val h
 
     var pendingFingerprint: String? = null
         private set
+
+    fun clearPending() {
+        pendingFingerprint = null
+    }
 
     override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
 
