@@ -19,6 +19,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: 'gradle'
       # Fails the build if the wrapper jar/checksums were tampered with.
       - uses: gradle/actions/wrapper-validation@v4
       - name: Unit tests

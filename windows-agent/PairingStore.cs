@@ -1,10 +1,6 @@
-// Pairing/auth store.
-//
-// Pairing codes are single-use-ish (expire after 5 minutes and rotate
-// automatically) and trust tokens are persisted to a DPAPI-encrypted JSON
-// file (%AppData%\PcRemoteAgent\trusted-devices.json) so devices stay paired
-// across agent restarts (docs/06-DATA-MODEL.md §2.2, docs/09-SECURITY-PRIVACY.md §3–4).
+// Persistent pairing code and DPAPI-encrypted token authentication store.
 
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -12,14 +8,22 @@ namespace PcRemoteAgent;
 
 public class PairingStore
 {
-    /// <summary>5 minutes by default; settable so tests can shorten it.</summary>
     internal static TimeSpan CodeLifetime { get; set; } = TimeSpan.FromMinutes(5);
+    internal static int MaxPairingFailures { get; set; } = 5;
+    internal static TimeSpan PairingLockout { get; set; } = TimeSpan.FromMinutes(2);
 
     private string _currentPairingCode = "";
     private DateTime _codeGeneratedAtUtc = DateTime.MinValue;
-    private readonly HashSet<string> _trustedTokens = new();
+    private readonly HashSet<string> _trustedTokens = [];
     private readonly string _tokensFile;
 
+    private sealed class FailureRecord
+    {
+        public int Count;
+        public DateTime LockedUntilUtc = DateTime.MinValue;
+    }
+
+    private readonly ConcurrentDictionary<string, FailureRecord> _pairingFailures = new();
     private readonly object _lock = new();
 
     private static string AppDataDir =>
@@ -27,21 +31,17 @@ public class PairingStore
 
     internal static string DefaultTokensFile => Path.Combine(AppDataDir, "trusted-devices.json");
 
-    public PairingStore() : this(null) { }
-
-    /// <param name="tokensFilePath">Override the persistence location (tests use a temp file).</param>
-    public PairingStore(string? tokensFilePath)
+    public PairingStore(string? tokensFilePath = null)
     {
         _tokensFile = tokensFilePath ?? DefaultTokensFile;
         LoadTokens();
     }
 
-    /// <summary>Generates (or refreshes) the pairing code and returns it.</summary>
     public string GeneratePairingCode()
     {
         lock (_lock)
         {
-            _currentPairingCode = Random.Shared.Next(0, 1_000_000).ToString("D6");
+            _currentPairingCode = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
             _codeGeneratedAtUtc = DateTime.UtcNow;
             return _currentPairingCode;
         }
@@ -55,22 +55,47 @@ public class PairingStore
         }
     }
 
-    /// <summary>The live pairing code, for UI hosts (tray menu).</summary>
     public string CurrentCode
     {
         get { lock (_lock) return _currentPairingCode; }
     }
 
-    public bool TryAuthenticate(string? token, string? pairingCode)
+    public bool IsIpLockedOut(string clientIp) =>
+        _pairingFailures.TryGetValue(clientIp, out var rec) && rec.LockedUntilUtc > DateTime.UtcNow;
+
+    public bool TryAuthenticate(string? token, string? pairingCode, string clientIp = "unknown")
     {
         lock (_lock)
         {
-            if (!string.IsNullOrEmpty(token) && _trustedTokens.Contains(token))
-                return true;
+            if (IsIpLockedOut(clientIp)) return false;
 
-            return !string.IsNullOrEmpty(pairingCode)
+            if (!string.IsNullOrEmpty(token) && _trustedTokens.Contains(token))
+            {
+                _pairingFailures.TryRemove(clientIp, out _);
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(pairingCode)
                 && pairingCode == _currentPairingCode
-                && DateTime.UtcNow - _codeGeneratedAtUtc <= CodeLifetime;
+                && DateTime.UtcNow - _codeGeneratedAtUtc <= CodeLifetime)
+            {
+                _pairingFailures.TryRemove(clientIp, out _);
+                _currentPairingCode = "";
+                return true;
+            }
+
+            RecordFailedAttempt(clientIp);
+            return false;
+        }
+    }
+
+    private void RecordFailedAttempt(string clientIp)
+    {
+        var rec = _pairingFailures.GetOrAdd(clientIp, _ => new FailureRecord());
+        rec.Count++;
+        if (rec.Count >= MaxPairingFailures)
+        {
+            rec.LockedUntilUtc = DateTime.UtcNow.Add(PairingLockout);
         }
     }
 
@@ -88,9 +113,19 @@ public class PairingStore
         }
     }
 
+    public bool RevokeToken(string token)
+    {
+        lock (_lock)
+        {
+            if (!_trustedTokens.Remove(token)) return false;
+            SaveTokens();
+            return true;
+        }
+    }
+
     public IReadOnlyCollection<string> TrustedTokens
     {
-        get { lock (_lock) { return _trustedTokens.ToList(); } }
+        get { lock (_lock) return _trustedTokens.ToArray(); }
     }
 
     private void LoadTokens()
@@ -101,7 +136,7 @@ public class PairingStore
             var bytes = File.ReadAllBytes(_tokensFile);
             var plain = ProtectedData.Unprotect(bytes, null, DataProtectionScope.CurrentUser);
             var doc = JsonSerializer.Deserialize<HashSet<string>>(plain);
-            if (doc != null)
+            if (doc is not null)
             {
                 lock (_lock)
                 {
@@ -121,8 +156,12 @@ public class PairingStore
         {
             var plain = JsonSerializer.SerializeToUtf8Bytes(_trustedTokens);
             var bytes = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
-            Directory.CreateDirectory(Path.GetDirectoryName(_tokensFile)!);
-            File.WriteAllBytes(_tokensFile, bytes);
+            var dir = Path.GetDirectoryName(_tokensFile)!;
+            Directory.CreateDirectory(dir);
+
+            var tempFile = Path.Combine(dir, $"{Path.GetFileName(_tokensFile)}.{Guid.NewGuid():N}.tmp");
+            File.WriteAllBytes(tempFile, bytes);
+            File.Move(tempFile, _tokensFile, overwrite: true);
         }
         catch (Exception ex)
         {

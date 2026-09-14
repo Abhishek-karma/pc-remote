@@ -6,7 +6,7 @@
 
 [![Release](https://img.shields.io/github/v/release/Abhishek-karma/pc-remote?style=for-the-badge&color=00E5FF)](https://github.com/Abhishek-karma/pc-remote/releases)
 [![License](https://img.shields.io/github/license/Abhishek-karma/pc-remote?style=for-the-badge&color=gray)](LICENSE)
-[![Android CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/android-ci.yml?branch=main&label=Android%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
+[![Android CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/android-app-ci.yml?branch=main&label=Android%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/windows-agent-ci.yml?branch=main&label=Windows%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
 
 Control your cursor, launch shortcuts, type Unicode text, manage media, and trigger system power actions directly over local Wi-Fi.

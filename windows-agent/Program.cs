@@ -1,24 +1,13 @@
-// PC Remote - Windows Agent
-// Tray application (WinForms NotifyIcon; no console window in normal use).
-// Serves a WebSocket-over-TLS endpoint on 0.0.0.0:58642 using its own
-// self-signed certificate (CertificateManager.cs) — no HttpListener, so no
-// `netsh urlacl`/admin rights are needed. Handles pairing (PairingStore.cs),
-// then drives mouse/keyboard/media/power via Win32 SendInput, and advertises
-// itself via mDNS (MdnsAdvertiser.cs). Run with --console for terminal
-// output (development).
-//
-// Required NuGet packages:
-//   Makaretu.Dns.Multicast (mDNS advertisement)
-//   System.Security.Cryptography.ProtectedData (DPAPI for cert + tokens)
+// PC Remote Windows Agent - System tray host and WSS server driving Win32 input simulation.
 
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -29,24 +18,19 @@ namespace PcRemoteAgent;
 public static class Program
 {
     public const int Port = 58642;
-    private static readonly PairingStore Pairing = new();
+    public const int MaxTotalConnections = 10;
+    public const int MaxConnectionsPerIp = 3;
 
-    /// <summary>clientIp -> connected-at, used for the connected-device indicator (§6).</summary>
+    private static readonly PairingStore Pairing = new();
     private static readonly ConcurrentDictionary<string, DateTime> Connected = new();
 
-    /// <summary>Live pairing code for UI hosts (tray menu).</summary>
     public static string CurrentPairingCode => Pairing.CurrentCode;
-
-    /// <summary>Raised on background threads whenever the pairing code rotates.</summary>
     public static event Action<string>? PairingCodeChanged;
-
-    /// <summary>Raised on background threads when the connected-device count changes.</summary>
     public static event Action<int>? ConnectedCountChanged;
 
     private static TcpListener? _listener;
     private static Mutex? _singleInstance;
 
-    /// <summary>Version for display (InformationalVersion without the commit suffix).</summary>
     public static string VersionDisplay =>
         (Assembly.GetEntryAssembly()
             ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -55,8 +39,6 @@ public static class Program
     [STAThread]
     public static async Task Main(string[] args)
     {
-        // Console output also lands in a dated log file, so an agent with no
-        // visible UI can still be diagnosed (14 §2).
         AgentLog.Init();
 
         if (args.Contains("--console"))
@@ -66,9 +48,6 @@ public static class Program
             return;
         }
 
-        // Single instance: a startup entry plus a manual launch (or a double
-        // start during development) must not create a second tray agent —
-        // the second one would die on the port or fork the pairing state.
         _singleInstance = new Mutex(initiallyOwned: true, @"Local\PC-Remote-Agent", out var createdNew);
         if (!createdNew)
         {
@@ -93,7 +72,6 @@ public static class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int dwProcessId);
 
-    /// <summary>Reattach to the launching terminal so --console output is visible.</summary>
     private static void AttachParentConsole() => AttachConsole(-1);
 
     private static async Task RunConsoleAsync()
@@ -138,12 +116,6 @@ public static class Program
         shutdown.Cancel();
     }
 
-    /// <summary>
-    /// Starts pairing rotation, mDNS, TLS certificate and the accept loop.
-    /// Returns when <paramref name="ct"/> is cancelled; throws on fatal startup
-    /// errors (e.g. port already in use). Hosts wire <see cref="PairingCodeChanged"/>
-    /// and <see cref="ConnectedCountChanged"/> before calling this.
-    /// </summary>
     public static async Task StartServerAsync(CancellationToken ct)
     {
         PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
@@ -157,16 +129,14 @@ public static class Program
                     await Task.Delay(PairingStore.CodeLifetime, ct);
                     lock (Pairing)
                     {
-                        if (!Pairing.IsCodeExpired()) continue; // already refreshed elsewhere
+                        if (!Pairing.IsCodeExpired()) continue;
                         PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
                     }
                 }
             }
-            catch (OperationCanceledException) { /* shutdown requested */ }
+            catch (OperationCanceledException) { }
         }, CancellationToken.None);
 
-        // Advertise via mDNS so the app can auto-discover this PC (falls back
-        // gracefully to manual IP entry if mDNS is unavailable).
         MdnsAdvertiser.Start(Port);
 
         var cert = CertificateManager.LoadOrCreate();
@@ -181,11 +151,10 @@ public static class Program
         }
     }
 
-    /// <summary>Tears down mDNS and the listener. Safe to call twice.</summary>
     public static void StopServer()
     {
         MdnsAdvertiser.Stop();
-        try { _listener?.Stop(); } catch { /* already stopped */ }
+        try { _listener?.Stop(); } catch { }
     }
 
     internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
@@ -193,130 +162,243 @@ public static class Program
         var clientIp = client.Client.RemoteEndPoint is IPEndPoint ep ? ep.Address.ToString() : "unknown";
         try
         {
-            var socket = await WebSocketConnection.AcceptAsync(
-                client.GetStream(), cert, isSecure: true);
+            var currentTotal = Connected.Count;
+            var currentIpCount = Connected.Keys.Count(k => k.StartsWith(clientIp + ":", StringComparison.Ordinal));
+
+            if (currentTotal >= MaxTotalConnections || currentIpCount >= MaxConnectionsPerIp)
+            {
+                Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded (Total: {currentTotal}, IP: {currentIpCount})");
+                return;
+            }
+
+            using var socket = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: true);
             if (socket is null)
             {
                 Console.WriteLine($"[!] {clientIp} rejected (handshake failed)");
-                client.Dispose();
                 return;
             }
 
             Console.WriteLine($"[+] Connection from {clientIp} (TLS)");
-            Connected[clientIp] = DateTime.UtcNow;
+            var connKey = $"{clientIp}:{Guid.NewGuid():N}";
+            Connected[connKey] = DateTime.UtcNow;
             PrintConnectedCount();
 
-            var authenticated = false;
             try
             {
+                var authenticated = false;
                 while (true)
                 {
                     var text = await socket.ReceiveTextAsync();
                     if (text is null) break;
 
-                    var msg = JsonSerializer.Deserialize<RemoteMessage>(text);
+                    RemoteMessage? msg;
+                    try
+                    {
+                        msg = JsonSerializer.Deserialize<RemoteMessage>(text);
+                    }
+                    catch
+                    {
+                        await SendErrorAsync(socket, null, "invalid_json");
+                        continue;
+                    }
+
                     if (msg is null) continue;
 
                     if (!authenticated)
                     {
-                        if (msg.Type == "auth" && Pairing.TryAuthenticate(msg.Token, msg.PairingCode))
+                        if (msg.Type == "auth")
                         {
-                            authenticated = true;
-                            var token = Pairing.IssueTokenIfNeeded(msg.Token);
-                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                            if (Pairing.IsIpLockedOut(clientIp))
                             {
-                                Type = "auth_ok",
-                                Token = token,
-                                // The app stores this as the display name —
-                                // covers manual-IP pairing too (mock §header).
-                                PcName = AgentInfo.Name
-                            }));
-                            Console.WriteLine($"[+] {clientIp} authenticated");
+                                Console.WriteLine($"[!] {clientIp} authentication blocked (locked out)");
+                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                                {
+                                    Version = 1,
+                                    RequestId = msg.RequestId,
+                                    Type = "auth_failed",
+                                    ErrorCode = "rate_limited"
+                                }));
+                                break;
+                            }
+
+                            if (Pairing.TryAuthenticate(msg.Token, msg.PairingCode, clientIp))
+                            {
+                                authenticated = true;
+                                var token = Pairing.IssueTokenIfNeeded(msg.Token);
+                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                                {
+                                    Version = 1,
+                                    RequestId = msg.RequestId,
+                                    Type = "auth_ok",
+                                    Token = token,
+                                    PcName = AgentInfo.Name
+                                }));
+                                Console.WriteLine($"[+] {clientIp} authenticated");
+                            }
+                            else
+                            {
+                                Console.WriteLine($"[!] {clientIp} authentication failed");
+                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                                {
+                                    Version = 1,
+                                    RequestId = msg.RequestId,
+                                    Type = "auth_failed",
+                                    ErrorCode = "invalid_credentials"
+                                }));
+                            }
                         }
                         else
                         {
-                            // Never log the attempted token or pairing code (14 §3).
-                            Console.WriteLine($"[!] {clientIp} authentication failed");
-                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage { Type = "auth_failed" }));
+                            await SendErrorAsync(socket, msg.RequestId, "unauthorized");
                         }
                         continue;
                     }
 
-                    // A shutdown/restart terminates this connection deliberately;
-                    // tell the app before executing so it doesn't try to reconnect
-                    // (10-ERROR-HANDLING.md §3).
                     if (msg.Type == "system_power" && msg.Action is "shutdown" or "restart")
                     {
-                        await socket.SendTextAsync(JsonSerializer.Serialize(
-                            new RemoteMessage { Type = "disconnecting", Reason = msg.Action }));
+                        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                        {
+                            Version = 1,
+                            RequestId = msg.RequestId,
+                            Type = "disconnecting",
+                            Reason = msg.Action
+                        }));
                     }
 
-                    HandleCommand(msg);
+                    await HandleCommandAsync(socket, msg);
                 }
             }
-            catch (Exception ex)
+            finally
             {
-                Console.WriteLine($"[!] Connection error from {clientIp}: {ex.Message}");
+                Connected.TryRemove(connKey, out _);
+                Win32Input.ReleaseAllButtons();
+                Console.WriteLine($"[-] {clientIp} disconnected");
+                PrintConnectedCount();
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Handshake error from {clientIp}: {ex.Message}");
+            Console.WriteLine($"[!] Connection error from {clientIp}: {ex.Message}");
         }
         finally
         {
-            Console.WriteLine($"[-] {clientIp} disconnected");
-            Connected.TryRemove(clientIp, out _);
-            PrintConnectedCount();
             client.Dispose();
         }
     }
 
     private static void PrintConnectedCount()
     {
-        Console.WriteLine($"     {Connected.Count} device(s) connected");
-        ConnectedCountChanged?.Invoke(Connected.Count);
+        var devices = Connected.Count;
+        Console.WriteLine($"     {devices} device(s) connected");
+        ConnectedCountChanged?.Invoke(devices);
     }
 
-    private static void HandleCommand(RemoteMessage msg)
+    private static async Task SendAckAsync(WebSocketConnection socket, string? requestId)
+    {
+        if (string.IsNullOrEmpty(requestId)) return;
+        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+        {
+            Version = 1,
+            RequestId = requestId,
+            Type = "command_result",
+            Success = true
+        }));
+    }
+
+    private static async Task SendErrorAsync(WebSocketConnection socket, string? requestId, string errorCode)
+    {
+        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+        {
+            Version = 1,
+            RequestId = requestId,
+            Type = "command_result",
+            Success = false,
+            ErrorCode = errorCode
+        }));
+    }
+
+    private static async Task HandleCommandAsync(WebSocketConnection socket, RemoteMessage msg)
     {
         switch (msg.Type)
         {
             case "mouse_move":
-                Win32Input.MoveMouseRelative(msg.Dx ?? 0, msg.Dy ?? 0);
+                Win32Input.MoveMouseRelative(
+                    Math.Clamp(msg.Dx ?? 0, -4096, 4096),
+                    Math.Clamp(msg.Dy ?? 0, -4096, 4096));
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "mouse_click":
-                Win32Input.MouseClick(msg.Button ?? "left", msg.Action ?? "click");
+                var btn = (msg.Button ?? "left").ToLowerInvariant();
+                var act = (msg.Action ?? "click").ToLowerInvariant();
+                if (btn is not ("left" or "right" or "middle") || act is not ("click" or "down" or "up"))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "bad_field");
+                    return;
+                }
+                Win32Input.MouseClick(btn, act);
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "mouse_scroll":
-                Win32Input.Scroll(msg.Dy ?? 0);
+                Win32Input.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200));
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "key_press":
-                Win32Input.SendKey(msg.Key ?? "", msg.Modifiers ?? new List<string>());
+                if (string.IsNullOrEmpty(msg.Key))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "bad_field");
+                    return;
+                }
+                Win32Input.SendKey(msg.Key, msg.Modifiers ?? []);
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "text_input":
-                Win32Input.TypeText(msg.Text ?? "");
+                var text = msg.Text ?? "";
+                if (text.Length > 1000) text = text[..1000];
+                Win32Input.TypeText(text);
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "media_control":
-                Win32Input.MediaControl(msg.Action ?? "");
+                var mediaAct = (msg.Action ?? "").ToLowerInvariant();
+                if (mediaAct is not ("play_pause" or "next" or "prev" or "vol_up" or "vol_down" or "mute"))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "invalid_command");
+                    return;
+                }
+                Win32Input.MediaControl(mediaAct);
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             case "system_power":
-                SystemPower.Execute(msg.Action ?? "");
+                var powerAct = (msg.Action ?? "").ToLowerInvariant();
+                if (powerAct is not ("sleep" or "lock" or "shutdown" or "restart"))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "invalid_command");
+                    return;
+                }
+                SystemPower.Execute(powerAct);
+                await SendAckAsync(socket, msg.RequestId);
                 break;
+
             default:
                 Console.WriteLine($"[?] Unknown message type: {msg.Type}");
+                await SendErrorAsync(socket, msg.RequestId, "unknown_type");
                 break;
         }
     }
 
     public static IEnumerable<string> GetLocalIPv4Addresses()
     {
-        foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
-            if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+            if (ni.OperationalStatus != OperationalStatus.Up) continue;
             foreach (var addr in ni.GetIPProperties().UnicastAddresses)
             {
-                if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                if (addr.Address.AddressFamily == AddressFamily.InterNetwork &&
                     !IPAddress.IsLoopback(addr.Address))
                 {
                     yield return addr.Address.ToString();
@@ -326,12 +408,11 @@ public static class Program
     }
 }
 
-/// <summary>
-/// JSON message shape shared with the Android app. Fields are nullable/optional
-/// since each message type only uses a subset of them.
-/// </summary>
+// JSON remote message data model shared between client and server.
 public class RemoteMessage
 {
+    [JsonPropertyName("version")] public int Version { get; set; } = 1;
+    [JsonPropertyName("requestId")] public string? RequestId { get; set; }
     [JsonPropertyName("type")] public string Type { get; set; } = "";
     [JsonPropertyName("reason")] public string? Reason { get; set; }
     [JsonPropertyName("dx")] public int? Dx { get; set; }
@@ -344,21 +425,19 @@ public class RemoteMessage
     [JsonPropertyName("token")] public string? Token { get; set; }
     [JsonPropertyName("pairingCode")] public string? PairingCode { get; set; }
     [JsonPropertyName("pcName")] public string? PcName { get; set; }
+    [JsonPropertyName("success")] public bool? Success { get; set; }
+    [JsonPropertyName("errorCode")] public string? ErrorCode { get; set; }
 }
 
-/// <summary>Identity details the app fetches automatically.</summary>
+// Host machine identity details.
 public static class AgentInfo
 {
     public static string Name => Environment.MachineName;
 }
 
-/// <summary>
-/// Win32 input simulation via SendInput. This is the core mechanism that lets
-/// the agent move the cursor, click, scroll, and send keystrokes.
-/// </summary>
+// Win32 SendInput and keyboard event simulation engine.
 public static class Win32Input
 {
-    // (unchanged from previous version — see git history)
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
     {
@@ -422,12 +501,12 @@ public static class Win32Input
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE } }
         };
-        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+        SendInput(1, [input], Marshal.SizeOf<INPUT>());
     }
 
     public static void MouseClick(string button, string action)
     {
-        var (down, up) = button.ToLower() switch
+        var (down, up) = button switch
         {
             "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
             "middle" => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
@@ -435,14 +514,14 @@ public static class Win32Input
         };
 
         void Fire(uint flag) =>
-            SendInput(1, new[] { new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flag } } } },
+            SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flag } } }],
                 Marshal.SizeOf<INPUT>());
 
         switch (action)
         {
             case "down": Fire(down); break;
             case "up": Fire(up); break;
-            default: Fire(down); Fire(up); break; // "click"
+            default: Fire(down); Fire(up); break;
         }
     }
 
@@ -453,15 +532,11 @@ public static class Win32Input
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { mouseData = unchecked((uint)(amount * 120)), dwFlags = MOUSEEVENTF_WHEEL } }
         };
-        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+        SendInput(1, [input], Marshal.SizeOf<INPUT>());
     }
 
-    // Simple virtual-key map for common special keys used by the remote's
-    // dedicated key buttons (arrows, enter, backspace, etc.).
-    // Complete virtual-key map for navigation, editing, system, and F1–F24 function keys.
     private static readonly Dictionary<string, ushort> VkMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Modifiers & Control Keys
         ["CTRL"] = 0x11,
         ["CONTROL"] = 0x11,
         ["ALT"] = 0x12,
@@ -470,8 +545,6 @@ public static class Win32Input
         ["WINDOWS"] = 0x5B,
         ["LWIN"] = 0x5B,
         ["RWIN"] = 0x5C,
-
-        // Standard Navigation & Editing Keys
         ["ENTER"] = 0x0D,
         ["RETURN"] = 0x0D,
         ["BACKSPACE"] = 0x08,
@@ -500,8 +573,6 @@ public static class Win32Input
         ["PAUSE"] = 0x13,
         ["CAPSLOCK"] = 0x14,
         ["NUMLOCK"] = 0x90,
-
-        // Function Keys (F1 - F24)
         ["F1"] = 0x70,
         ["F2"] = 0x71,
         ["F3"] = 0x72,
@@ -530,10 +601,9 @@ public static class Win32Input
 
     public static void SendKey(string key, List<string> modifiers)
     {
-        var modifierVks = modifiers.Select(m => VkMap.GetValueOrDefault(m.ToUpper(), (ushort)0)).Where(v => v != 0).ToList();
-        if (!VkMap.TryGetValue(key.ToUpper(), out var vk))
+        var modifierVks = modifiers.Select(m => VkMap.GetValueOrDefault(m, (ushort)0)).Where(v => v != 0).ToList();
+        if (!VkMap.TryGetValue(key, out var vk))
         {
-            // Fall back to treating a single character key as its ASCII/VK code.
             if (key.Length == 1) vk = (ushort)char.ToUpper(key[0]);
             else return;
         }
@@ -544,7 +614,6 @@ public static class Win32Input
         foreach (var m in modifierVks) keybd_event((byte)m, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
     }
 
-    // Types arbitrary Unicode text (used for the soft-keyboard "type text" flow).
     public static void TypeText(string text)
     {
         var inputs = new List<INPUT>();
@@ -554,12 +623,11 @@ public static class Win32Input
             inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wScan = ch, dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP } } });
         }
         if (inputs.Count > 0)
-            SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>());
+            SendInput((uint)inputs.Count, [.. inputs], Marshal.SizeOf<INPUT>());
     }
 
     public static void MediaControl(string action)
     {
-        // Virtual key codes for media keys (handled natively by Windows).
         const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
         const byte VK_MEDIA_NEXT_TRACK = 0xB0;
         const byte VK_MEDIA_PREV_TRACK = 0xB1;
@@ -582,8 +650,29 @@ public static class Win32Input
         keybd_event(vk, 0, 0, IntPtr.Zero);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
     }
+
+    public static void ReleaseAllButtons()
+    {
+        try
+        {
+            SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP } } }], Marshal.SizeOf<INPUT>());
+            SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_RIGHTUP } } }], Marshal.SizeOf<INPUT>());
+            SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_MIDDLEUP } } }], Marshal.SizeOf<INPUT>());
+
+            ReadOnlySpan<byte> modifiers = [0x11, 0x12, 0x10, 0x5B, 0x5C];
+            foreach (var vk in modifiers)
+            {
+                keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[!] Error releasing buttons/modifiers: {ex.Message}");
+        }
+    }
 }
 
+// System power state management wrapper.
 public static class SystemPower
 {
     [DllImport("PowrProf.dll", SetLastError = true)]

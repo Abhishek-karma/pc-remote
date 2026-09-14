@@ -33,17 +33,27 @@ The Windows Agent serves as the local host daemon for PC Remote:
 
 ---
 
-## 🛡️ Windows Firewall Setup
+## 🛡️ Windows Firewall Setup & Security Scoping
 
-To allow the Android app to connect and discover the agent, add rules for the WebSocket port and mDNS multicast:
+To allow the Android app to connect and discover the agent over local Wi-Fi, add rules for the WebSocket port and mDNS multicast. **Always scope rules to Private Wi-Fi / Ethernet profiles**:
 
 ```powershell
-# Inbound TCP for WebSocket TLS (Port 58642)
-netsh advfirewall firewall add rule name="PC Remote Agent" dir=in action=allow protocol=TCP localport=58642
+# Inbound TCP for WebSocket TLS (Port 58642, Private profile only)
+netsh advfirewall firewall add rule name="PC Remote Agent" dir=in action=allow protocol=TCP localport=58642 profile=private
 
-# Inbound UDP for mDNS Discovery (Port 5353)
-netsh advfirewall firewall add rule name="PC Remote Agent mDNS" dir=in action=allow protocol=UDP localport=5353
+# Inbound UDP for mDNS Discovery (Port 5353, Private profile only)
+netsh advfirewall firewall add rule name="PC Remote Agent mDNS" dir=in action=allow protocol=UDP localport=5353 profile=private
 ```
+
+---
+
+## 🔒 Hardened Security Controls
+
+- **Cryptographic Pairing**: Codes generated via `RandomNumberGenerator.GetInt32` (single-use, 5-min lifespan).
+- **Brute-Force Lockout**: 5 failed pairing attempts triggers an automatic 2-minute IP lockout.
+- **Resource Caps**: Limited to 10 total concurrent connections (3 per IP) and 64 KiB WebSocket frame size.
+- **RFC 6455 Enforcement**: Rejects unmasked client frames and drops connection to prevent proxy poisoning.
+- **Disconnect Button Release**: Automatically fires key-up signals for mouse buttons and modifier keys (`Ctrl`, `Alt`, `Shift`, `Win`) on socket closure.
 
 ---
 

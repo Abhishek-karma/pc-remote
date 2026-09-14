@@ -3,9 +3,15 @@ bin/
 obj/
 *.user
 .vs/
+.vscode/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
 
-# Published startup exe (build once, don't track)
+# Published startup exe and dist builds (don't track)
 windows-agent/publish/
+windows-agent/dist/
 
 # --- Android (android-app) ---
 .gradle/
@@ -20,6 +26,7 @@ captures/
 
 # --- Misc ---
 .zcode/
+.freebuff/
 .DS_Store
 Thumbs.db
 *.log

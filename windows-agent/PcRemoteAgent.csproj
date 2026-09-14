@@ -15,6 +15,8 @@
          Release CI overrides this with -p:Version=<git tag>; keep this default in
          sync with android-app's versionName. -->
     <VersionPrefix>0.1.1</VersionPrefix>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
     <Product>PC Remote Agent</Product>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- The agent is Windows-only by design (docs/01-PRODUCT-REQUIREMENTS.md
