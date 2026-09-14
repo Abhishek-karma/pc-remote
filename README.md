@@ -4,7 +4,7 @@
 
 **Ultra-low latency, zero-cloud remote control for Windows PCs from Android.**
 
-[![Release](https://img.shields.io/badge/release-v0.1.2-00E5FF?style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.3-00E5FF?style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/releases)
 [![License](https://img.shields.io/github/license/Abhishek-karma/pc-remote?style=for-the-badge&color=gray)](LICENSE)
 [![Android CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/android-app-ci.yml?branch=main&label=Android%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/windows-agent-ci.yml?branch=main&label=Windows%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
