@@ -12,6 +12,8 @@ TestResults/
 # Published startup exe and dist builds (don't track)
 windows-agent/publish/
 windows-agent/dist/
+android-app/dist/
+dist/
 
 # --- Android (android-app) ---
 .gradle/
@@ -41,6 +43,12 @@ skills-lock.json
 
 # --- Local-only documentation (specs kept out of the public repository) ---
 docs/
+AUDIT.md
+
+# --- Temporary & IDE user files ---
+*.suo
+*.tmp
+*.bak
 
 # --- Signing material (never commit) ---
 *.jks
