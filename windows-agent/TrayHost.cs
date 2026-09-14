@@ -25,17 +25,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // NotifyIcon) is created — capture it to marshal server events.
         _ui = SynchronizationContext.Current ?? new SynchronizationContext();
 
-        var menu = new ContextMenuStrip
-        {
-            Renderer = new DarkMenuRenderer(),
-            BackColor = Color.FromArgb(0x0F, 0x15, 0x20),
-            ForeColor = Color.FromArgb(0xE2, 0xE8, 0xF0),
-            ShowImageMargin = false
-        };
-        var titleItem = new ToolStripMenuItem($"PC Remote {Program.VersionDisplay}") { Enabled = false };
-        titleItem.ForeColor = Color.FromArgb(0x38, 0xBD, 0xF8);
-
-        menu.Items.Add(titleItem);
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(
+            new ToolStripMenuItem($"PC Remote {Program.VersionDisplay}") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_codeItem);
         menu.Items.Add("Copy pairing code", null, (_, _) => Clipboard.SetText(Program.CurrentPairingCode));
@@ -126,30 +118,3 @@ internal static class StartupToggle
     }
 }
 
-internal sealed class DarkColorTable : ProfessionalColorTable
-{
-    public override Color ToolStripDropDownBackground => Color.FromArgb(0x0F, 0x15, 0x20);
-    public override Color MenuBorder => Color.FromArgb(0x26, 0x35, 0x4B);
-    public override Color MenuItemSelected => Color.FromArgb(0x0C, 0x2D, 0x48);
-    public override Color MenuItemSelectedGradientBegin => Color.FromArgb(0x0C, 0x2D, 0x48);
-    public override Color MenuItemSelectedGradientEnd => Color.FromArgb(0x0C, 0x2D, 0x48);
-    public override Color MenuItemBorder => Color.FromArgb(0x38, 0xBD, 0xF8);
-    public override Color SeparatorDark => Color.FromArgb(0x26, 0x35, 0x4B);
-    public override Color SeparatorLight => Color.FromArgb(0x16, 0x1F, 0x2E);
-    public override Color ImageMarginGradientBegin => Color.FromArgb(0x0F, 0x15, 0x20);
-    public override Color ImageMarginGradientMiddle => Color.FromArgb(0x0F, 0x15, 0x20);
-    public override Color ImageMarginGradientEnd => Color.FromArgb(0x0F, 0x15, 0x20);
-}
-
-internal sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
-{
-    public DarkMenuRenderer() : base(new DarkColorTable()) { }
-
-    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
-    {
-        e.TextColor = e.Item.Enabled
-            ? (e.Item.Selected ? Color.FromArgb(0x38, 0xBD, 0xF8) : Color.FromArgb(0xE2, 0xE8, 0xF0))
-            : Color.FromArgb(0x64, 0x74, 0x8B);
-        base.OnRenderItemText(e);
-    }
-}
