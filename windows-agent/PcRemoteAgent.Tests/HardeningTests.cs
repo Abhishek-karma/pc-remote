@@ -92,7 +92,7 @@ public class HardeningTests : IDisposable
         var stream = rawClient.GetStream();
 
         // Send valid HTTP upgrade request
-        const string upgradeReq = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+        const string upgradeReq = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         await stream.WriteAsync(Encoding.ASCII.GetBytes(upgradeReq));
 
         // Read upgrade response
@@ -106,6 +106,98 @@ public class HardeningTests : IDisposable
 
         var receivedText = await serverTask;
         Assert.Null(receivedText); // RFC 6455 §5.1: server MUST drop connection on unmasked client frame
+
+        listener.Stop();
+    }
+
+    [Fact]
+    public void PruneExpiredFailuresRemovesOldLockouts()
+    {
+        var store = NewStore();
+        store.GeneratePairingCode();
+        const string attackerIp = "192.168.1.201";
+
+        for (var i = 0; i < PairingStore.MaxPairingFailures; i++)
+        {
+            store.TryAuthenticate(null, "000000", attackerIp);
+        }
+        Assert.True(store.IsIpLockedOut(attackerIp));
+
+        store.PruneExpiredFailures();
+        // Since lockout hasn't expired yet, it stays
+        Assert.True(store.IsIpLockedOut(attackerIp));
+    }
+
+    [Fact]
+    public async Task WebSocketRejectsFrameWithReservedBits()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            var cert = CertificateManager.LoadOrCreate();
+            using var ws = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: false);
+            if (ws is null) return null;
+            return await ws.ReceiveTextAsync();
+        });
+
+        using var rawClient = new TcpClient();
+        await rawClient.ConnectAsync(IPAddress.Loopback, port);
+        var stream = rawClient.GetStream();
+
+        const string upgradeReq = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(upgradeReq));
+
+        var respBuf = new byte[512];
+        var read = await stream.ReadAsync(respBuf, 0, respBuf.Length);
+        Assert.True(read > 0);
+
+        // 0xF1 = FIN=1, RSV1=1, RSV2=1, RSV3=1, Opcode=1 -> MUST BE REJECTED
+        byte[] rsvFrame = [0xF1, 0x80, 0x00, 0x00, 0x00, 0x00];
+        await stream.WriteAsync(rsvFrame);
+
+        var receivedText = await serverTask;
+        Assert.Null(receivedText);
+
+        listener.Stop();
+    }
+
+    [Fact]
+    public async Task WebSocketRejectsOversizedControlFrame()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            var cert = CertificateManager.LoadOrCreate();
+            using var ws = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: false);
+            if (ws is null) return null;
+            return await ws.ReceiveTextAsync();
+        });
+
+        using var rawClient = new TcpClient();
+        await rawClient.ConnectAsync(IPAddress.Loopback, port);
+        var stream = rawClient.GetStream();
+
+        const string upgradeReq = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(upgradeReq));
+
+        var respBuf = new byte[512];
+        var read = await stream.ReadAsync(respBuf, 0, respBuf.Length);
+        Assert.True(read > 0);
+
+        // 0x88 = Close control frame, payload len 126 (extended len) -> MUST BE REJECTED (control frames <= 125)
+        byte[] oversizedControl = [0x88, 0xFE, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00];
+        await stream.WriteAsync(oversizedControl);
+
+        var receivedText = await serverTask;
+        Assert.Null(receivedText);
 
         listener.Stop();
     }

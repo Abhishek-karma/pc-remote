@@ -27,30 +27,44 @@ public class WebSocketConnection : IDisposable
         X509Certificate2 serverCertificate,
         bool isSecure)
     {
-        var stream = isSecure
-            ? new SslStream(rawStream, leaveInnerStreamOpen: false)
-            : rawStream;
-
-        if (stream is SslStream ssl)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
         {
-            await ssl.AuthenticateAsServerAsync(serverCertificate);
+            var stream = isSecure
+                ? new SslStream(rawStream, leaveInnerStreamOpen: false)
+                : rawStream;
+
+            if (stream is SslStream ssl)
+            {
+                await ssl.AuthenticateAsServerAsync(serverCertificate).WaitAsync(cts.Token);
+            }
+
+            var headers = await ReadUpgradeRequestAsync(stream, cts.Token);
+            if (headers is null ||
+                !headers.TryGetValue("sec-websocket-key", out var key) ||
+                string.IsNullOrWhiteSpace(key) ||
+                !headers.TryGetValue("sec-websocket-version", out var ver) ||
+                ver != "13")
+            {
+                return null;
+            }
+
+            await SendUpgradeResponseAsync(stream, key, cts.Token);
+            return new WebSocketConnection(stream);
         }
-
-        var headers = await ReadUpgradeRequestAsync(stream);
-        if (headers is null || !headers.TryGetValue("sec-websocket-key", out var key))
+        catch
+        {
             return null;
-
-        await SendUpgradeResponseAsync(stream, key);
-        return new WebSocketConnection(stream);
+        }
     }
 
-    private static async Task<Dictionary<string, string>?> ReadUpgradeRequestAsync(Stream stream)
+    private static async Task<Dictionary<string, string>?> ReadUpgradeRequestAsync(Stream stream, CancellationToken ct)
     {
         var buffer = new byte[8192];
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var n = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset));
+            var n = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), ct);
             if (n == 0) return null;
             offset += n;
             if (Array.IndexOf(buffer, (byte)'\n', 0, offset) >= 0 &&
@@ -75,7 +89,7 @@ public class WebSocketConnection : IDisposable
         length >= 4 && buffer[length - 4] == '\r' && buffer[length - 3] == '\n'
             && buffer[length - 2] == '\r' && buffer[length - 1] == '\n';
 
-    private static async Task SendUpgradeResponseAsync(Stream stream, string secWebSocketKey)
+    private static async Task SendUpgradeResponseAsync(Stream stream, string secWebSocketKey, CancellationToken ct)
     {
         var accept = Convert.ToBase64String(SHA1.HashData(
             Encoding.ASCII.GetBytes(secWebSocketKey + AcceptGuid)));
@@ -83,8 +97,8 @@ public class WebSocketConnection : IDisposable
                        $"Upgrade: websocket\r\n" +
                        $"Connection: Upgrade\r\n" +
                        $"Sec-WebSocket-Accept: {accept}\r\n\r\n";
-        await stream.WriteAsync(Encoding.ASCII.GetBytes(response));
-        await stream.FlushAsync();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(response), ct);
+        await stream.FlushAsync(ct);
     }
 
     public async Task<string?> ReceiveTextAsync()
@@ -126,9 +140,38 @@ public class WebSocketConnection : IDisposable
         var header = new byte[2];
         if (await ReadExactAsync(header, 2) < 2) return null;
 
-        byte opcode = (byte)(header[0] & 0x0F);
-        bool masked = (header[1] & 0x80) != 0;
+        byte finAndRsv = header[0];
+        bool fin = (finAndRsv & 0x80) != 0;
+        int rsv = finAndRsv & 0x70;
+        if (rsv != 0)
+        {
+            Console.WriteLine("[!] RFC 6455 violation: RSV bits must be 0");
+            return null;
+        }
 
+        byte opcode = (byte)(finAndRsv & 0x0F);
+        if (opcode is not (0x1 or 0x8 or 0x9 or 0xA))
+        {
+            Console.WriteLine($"[!] RFC 6455 violation: Unsupported opcode 0x{opcode:X}");
+            return null;
+        }
+
+        bool isControlFrame = opcode >= 0x8;
+        if (isControlFrame)
+        {
+            if (!fin)
+            {
+                Console.WriteLine("[!] RFC 6455 violation: Control frame must not be fragmented");
+                return null;
+            }
+        }
+        else if (!fin)
+        {
+            Console.WriteLine("[!] RFC 6455 violation: Fragmented data frames are not supported");
+            return null;
+        }
+
+        bool masked = (header[1] & 0x80) != 0;
         if (!masked)
         {
             Console.WriteLine("[!] RFC 6455 violation: Client sent unmasked frame");
@@ -136,6 +179,11 @@ public class WebSocketConnection : IDisposable
         }
 
         ulong length = (ulong)(header[1] & 0x7F);
+        if (isControlFrame && length > 125)
+        {
+            Console.WriteLine($"[!] RFC 6455 violation: Control frame payload length ({length}) > 125");
+            return null;
+        }
 
         if (length == 126)
         {
@@ -148,6 +196,7 @@ public class WebSocketConnection : IDisposable
             var ext = new byte[8];
             if (await ReadExactAsync(ext, 8) < 8) return null;
             length = BinaryPrimitives.ReadUInt64BigEndian(ext);
+            if (length > long.MaxValue) return null;
         }
 
         if (length > MaxPayloadSize)
@@ -164,6 +213,16 @@ public class WebSocketConnection : IDisposable
 
         for (var i = 0; i < payload.Length; i++)
             payload[i] ^= maskKey[i % 4];
+
+        if (opcode == 0x8)
+        {
+            if (payload.Length == 1) return null;
+            if (payload.Length >= 2)
+            {
+                ushort code = BinaryPrimitives.ReadUInt16BigEndian(payload);
+                if (code is < 1000 or 1004 or 1005 or 1006 or 1015 or > 4999) return null;
+            }
+        }
 
         return (opcode, payload);
     }

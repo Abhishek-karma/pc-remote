@@ -91,11 +91,27 @@ public class PairingStore
 
     private void RecordFailedAttempt(string clientIp)
     {
+        PruneExpiredFailures();
         var rec = _pairingFailures.GetOrAdd(clientIp, _ => new FailureRecord());
         rec.Count++;
         if (rec.Count >= MaxPairingFailures)
         {
             rec.LockedUntilUtc = DateTime.UtcNow.Add(PairingLockout);
+        }
+    }
+
+    public void PruneExpiredFailures()
+    {
+        var now = DateTime.UtcNow;
+        if (_pairingFailures.Count > 100)
+        {
+            foreach (var (ip, rec) in _pairingFailures)
+            {
+                if (rec.LockedUntilUtc < now)
+                {
+                    _pairingFailures.TryRemove(ip, out _);
+                }
+            }
         }
     }
 

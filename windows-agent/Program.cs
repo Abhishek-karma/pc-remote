@@ -157,20 +157,35 @@ public static class Program
         try { _listener?.Stop(); } catch { }
     }
 
-    internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
+    private static bool TryAcquireConnectionSlot(string clientIp, out string connKey)
     {
-        var clientIp = client.Client.RemoteEndPoint is IPEndPoint ep ? ep.Address.ToString() : "unknown";
-        try
+        connKey = $"{clientIp}:{Guid.NewGuid():N}";
+        lock (Connected)
         {
             var currentTotal = Connected.Count;
             var currentIpCount = Connected.Keys.Count(k => k.StartsWith(clientIp + ":", StringComparison.Ordinal));
 
             if (currentTotal >= MaxTotalConnections || currentIpCount >= MaxConnectionsPerIp)
             {
-                Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded (Total: {currentTotal}, IP: {currentIpCount})");
-                return;
+                return false;
             }
 
+            Connected[connKey] = DateTime.UtcNow;
+            return true;
+        }
+    }
+
+    internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
+    {
+        var clientIp = client.Client.RemoteEndPoint is IPEndPoint ep ? ep.Address.ToString() : "unknown";
+        if (!TryAcquireConnectionSlot(clientIp, out var connKey))
+        {
+            Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded");
+            return;
+        }
+
+        try
+        {
             using var socket = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: true);
             if (socket is null)
             {
@@ -179,101 +194,117 @@ public static class Program
             }
 
             Console.WriteLine($"[+] Connection from {clientIp} (TLS)");
-            var connKey = $"{clientIp}:{Guid.NewGuid():N}";
-            Connected[connKey] = DateTime.UtcNow;
             PrintConnectedCount();
 
-            try
+            var authenticated = false;
+            var authDeadline = DateTime.UtcNow.AddSeconds(15);
+            var messageCount = 0;
+            var windowStart = DateTime.UtcNow;
+
+            while (true)
             {
-                var authenticated = false;
-                while (true)
+                if (!authenticated && DateTime.UtcNow > authDeadline)
                 {
-                    var text = await socket.ReceiveTextAsync();
-                    if (text is null) break;
+                    Console.WriteLine($"[!] {clientIp} disconnected (authentication timeout)");
+                    break;
+                }
 
-                    RemoteMessage? msg;
-                    try
-                    {
-                        msg = JsonSerializer.Deserialize<RemoteMessage>(text);
-                    }
-                    catch
-                    {
-                        await SendErrorAsync(socket, null, "invalid_json");
-                        continue;
-                    }
+                var text = await socket.ReceiveTextAsync();
+                if (text is null) break;
 
-                    if (msg is null) continue;
+                var now = DateTime.UtcNow;
+                if ((now - windowStart).TotalSeconds >= 1.0)
+                {
+                    messageCount = 0;
+                    windowStart = now;
+                }
+                messageCount++;
+                if (messageCount > 150)
+                {
+                    await Task.Delay(10);
+                }
 
-                    if (!authenticated)
+                RemoteMessage? msg;
+                try
+                {
+                    msg = JsonSerializer.Deserialize<RemoteMessage>(text);
+                }
+                catch
+                {
+                    await SendErrorAsync(socket, null, "invalid_json");
+                    continue;
+                }
+
+                if (msg is null) continue;
+
+                if (msg.Version != 1)
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "unsupported_version");
+                    continue;
+                }
+
+                if (!authenticated)
+                {
+                    if (msg.Type == "auth")
                     {
-                        if (msg.Type == "auth")
+                        if (Pairing.IsIpLockedOut(clientIp))
                         {
-                            if (Pairing.IsIpLockedOut(clientIp))
+                            Console.WriteLine($"[!] {clientIp} authentication blocked (locked out)");
+                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
                             {
-                                Console.WriteLine($"[!] {clientIp} authentication blocked (locked out)");
-                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
-                                {
-                                    Version = 1,
-                                    RequestId = msg.RequestId,
-                                    Type = "auth_failed",
-                                    ErrorCode = "rate_limited"
-                                }));
-                                break;
-                            }
+                                Version = 1,
+                                RequestId = msg.RequestId,
+                                Type = "auth_failed",
+                                ErrorCode = "rate_limited"
+                            }));
+                            break;
+                        }
 
-                            if (Pairing.TryAuthenticate(msg.Token, msg.PairingCode, clientIp))
+                        if (Pairing.TryAuthenticate(msg.Token, msg.PairingCode, clientIp))
+                        {
+                            authenticated = true;
+                            var token = Pairing.IssueTokenIfNeeded(msg.Token);
+                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
                             {
-                                authenticated = true;
-                                var token = Pairing.IssueTokenIfNeeded(msg.Token);
-                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
-                                {
-                                    Version = 1,
-                                    RequestId = msg.RequestId,
-                                    Type = "auth_ok",
-                                    Token = token,
-                                    PcName = AgentInfo.Name
-                                }));
-                                Console.WriteLine($"[+] {clientIp} authenticated");
-                            }
-                            else
-                            {
-                                Console.WriteLine($"[!] {clientIp} authentication failed");
-                                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
-                                {
-                                    Version = 1,
-                                    RequestId = msg.RequestId,
-                                    Type = "auth_failed",
-                                    ErrorCode = "invalid_credentials"
-                                }));
-                            }
+                                Version = 1,
+                                RequestId = msg.RequestId,
+                                Type = "auth_ok",
+                                Token = token,
+                                PcName = AgentInfo.Name
+                            }));
+                            Console.WriteLine($"[+] {clientIp} authenticated");
                         }
                         else
                         {
-                            await SendErrorAsync(socket, msg.RequestId, "unauthorized");
+                            Console.WriteLine($"[!] {clientIp} authentication failed");
+                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                            {
+                                Version = 1,
+                                RequestId = msg.RequestId,
+                                Type = "auth_failed",
+                                ErrorCode = "invalid_credentials"
+                            }));
                         }
-                        continue;
                     }
-
-                    if (msg.Type == "system_power" && msg.Action is "shutdown" or "restart")
+                    else
                     {
-                        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
-                        {
-                            Version = 1,
-                            RequestId = msg.RequestId,
-                            Type = "disconnecting",
-                            Reason = msg.Action
-                        }));
+                        await SendErrorAsync(socket, msg.RequestId, "unauthorized");
                     }
-
-                    await HandleCommandAsync(socket, msg);
+                    continue;
                 }
-            }
-            finally
-            {
-                Connected.TryRemove(connKey, out _);
-                Win32Input.ReleaseAllButtons();
-                Console.WriteLine($"[-] {clientIp} disconnected");
-                PrintConnectedCount();
+
+                if (msg.Type == "system_power" && msg.Action is "shutdown" or "restart")
+                {
+                    await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                    {
+                        Version = 1,
+                        RequestId = msg.RequestId,
+                        Type = "disconnecting",
+                        Reason = msg.Action
+                    }));
+                }
+
+                await HandleCommandAsync(socket, msg);
             }
         }
         catch (Exception ex)
@@ -282,6 +313,13 @@ public static class Program
         }
         finally
         {
+            lock (Connected)
+            {
+                Connected.TryRemove(connKey, out _);
+            }
+            Win32Input.ReleaseAllButtons();
+            Console.WriteLine($"[-] {clientIp} disconnected");
+            PrintConnectedCount();
             client.Dispose();
         }
     }

@@ -6,7 +6,7 @@ PC Remote is designed as a **zero-cloud, local-network-only (LAN)** remote contr
 
 ### Trust Boundaries
 1. **Network**: Operates over WebSocket-over-TLS (WSS) on TCP port `58642`. The local area network (LAN) is treated as un-trusted; all traffic is encrypted end-to-end using TLS.
-2. **Identity & Pinning**: Trust-On-First-Use (TOFU) certificate pinning. The Android client verifies and pins the SHA-256 fingerprint of the Windows agent's self-signed X.509 certificate upon first pairing.
+2. **Identity & Pinning**: Post-Authentication Trust-On-First-Use (TOFU) certificate pinning. The Android client inspects the SHA-256 fingerprint of the Windows agent's self-signed X.509 certificate and persists it only after successful pairing authentication (`auth_ok`), preventing unauthenticated certificate poisoning on untrusted networks. Subsequent connections strictly verify the pinned certificate fingerprint.
 3. **Authentication**: 
    - 6-digit numeric pairing code generated using `System.Security.Cryptography.RandomNumberGenerator`.
    - Pairing codes auto-expire after 5 minutes and are single-use.

@@ -109,6 +109,7 @@ class RemoteConnection(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val hostClients = mutableMapOf<String, OkHttpClient>()
+    private val activeTrustManagers = mutableMapOf<String, PinningTrustManager>()
     private var webSocket: WebSocket? = null
     private var currentHostInternal: String? = null
     private var currentPortInternal = 58642
@@ -185,13 +186,16 @@ class RemoteConnection(
         webSocket = clientFor(host).newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val savedToken = tokenStore.getToken(host)
-                sendRaw(RemoteMessage(type = "auth", token = savedToken, pairingCode = pairingCode))
+                sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "auth", token = savedToken, pairingCode = pairingCode))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val msg = runCatching { json.decodeFromString<RemoteMessage>(text) }.getOrNull() ?: return
                 when (msg.type) {
                     "auth_ok" -> {
+                        activeTrustManagers[host]?.pendingFingerprint?.let { fingerprint ->
+                            pinStore.recordPin(host, fingerprint)
+                        }
                         msg.token?.let { tokenStore.saveToken(host, it) }
                         msg.pcName?.let { onPcName?.invoke(host, it) }
                         authFailed = false
@@ -267,6 +271,7 @@ class RemoteConnection(
     private fun clientFor(host: String): OkHttpClient =
         hostClients.getOrPut(host) {
             val trustManager = PinningTrustManager(pinStore, host)
+            activeTrustManagers[host] = trustManager
             val sslContext = SSLContext.getInstance("TLS")
             sslContext.init(null, arrayOf<X509TrustManager>(trustManager), SecureRandom())
             baseClient.newBuilder()
@@ -278,21 +283,29 @@ class RemoteConnection(
 
     // --- Command helpers used directly by the UI layer ---
 
-    fun sendMouseMove(dx: Int, dy: Int) = sendRaw(RemoteMessage(type = "mouse_move", dx = dx, dy = dy))
+    private fun generateRequestId(): String =
+        java.util.UUID.randomUUID().toString().substring(0, 8)
+
+    fun sendMouseMove(dx: Int, dy: Int) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_move", dx = dx, dy = dy))
 
     fun sendMouseClick(button: String = "left", action: String = "click") =
-        sendRaw(RemoteMessage(type = "mouse_click", button = button, action = action))
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_click", button = button, action = action))
 
-    fun sendScroll(dy: Int) = sendRaw(RemoteMessage(type = "mouse_scroll", dy = dy))
+    fun sendScroll(dy: Int) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_scroll", dy = dy))
 
     fun sendKey(key: String, modifiers: List<String> = emptyList()) =
-        sendRaw(RemoteMessage(type = "key_press", key = key, modifiers = modifiers))
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "key_press", key = key, modifiers = modifiers))
 
-    fun sendText(text: String) = sendRaw(RemoteMessage(type = "text_input", text = text))
+    fun sendText(text: String) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "text_input", text = text))
 
-    fun sendMedia(action: String) = sendRaw(RemoteMessage(type = "media_control", action = action))
+    fun sendMedia(action: String) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "media_control", action = action))
 
-    fun sendPower(action: String) = sendRaw(RemoteMessage(type = "system_power", action = action))
+    fun sendPower(action: String) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "system_power", action = action))
 
     private fun sendRaw(message: RemoteMessage) {
         val text = json.encodeToString(message)
@@ -302,12 +315,13 @@ class RemoteConnection(
 
 /**
  * Trust-on-first-use pinning: the first certificate seen for a host is
- * recorded and every later handshake must present the identical certificate.
- * Before a pin exists the host is trusted once (necessary for first pairing)
- * and the pin is stored immediately. Sharing the trust manager across
- * OkHttpClients is avoided deliberately — see [RemoteConnection.clientFor].
+ * recorded ONLY AFTER successful authentication (auth_ok).
+ * Every later handshake must present the identical certificate.
  */
-private class PinningTrustManager(private val pinStore: PinStore, private val host: String) : X509TrustManager {
+internal class PinningTrustManager(private val pinStore: PinStore, private val host: String) : X509TrustManager {
+
+    var pendingFingerprint: String? = null
+        private set
 
     override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
 
@@ -318,7 +332,9 @@ private class PinningTrustManager(private val pinStore: PinStore, private val ho
         if (pinned != null && pinned != fingerprint) {
             throw CertificateException("Certificate changed for $host (pinned $pinned, saw $fingerprint)")
         }
-        pinStore.recordPin(host, fingerprint) // TOFU: first-seen wins
+        if (pinned == null) {
+            pendingFingerprint = fingerprint
+        }
     }
 
     override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
