@@ -94,15 +94,11 @@ class DiscoveryService(
         _snapshot.value = DiscoverySnapshot(DiscoveryStatus.SEARCHING, emptyList())
         val events = object : DiscoveryEvents {
             override fun onFound(serviceName: String, serviceType: String) {
-                // Tolerate the trailing ".local." some platforms append to the
-                // advertised service type.
-                if (serviceType != SERVICE_TYPE && serviceType != SERVICE_TYPE + "local.") return
-                // NsdManager re-delivers found services on repeat announcements;
-                // ignore ones we already have (dedupe runs before resolve, so a
-                // slow resolve can't create a duplicate).
+                // Flexible match for platform variations in serviceType (leading/trailing dots, .local suffix)
+                if (!serviceType.contains("_pc-remote._tcp", ignoreCase = true)) return
                 if (_snapshot.value.pcs.any { it.serviceName == serviceName }) return
                 gateway.resolve(serviceName) { resolved ->
-                    if (resolved == null) return@resolve // failed/timed out; next announcement retries
+                    if (resolved == null) return@resolve
                     post {
                         _snapshot.value = _snapshot.value.copy(pcs = _snapshot.value.pcs + resolved)
                     }
@@ -122,8 +118,6 @@ class DiscoveryService(
 
         browsing = true
         gateway.discoverServices(SERVICE_TYPE, events)
-        // Hold the multicast lock for the whole browse so the agent's
-        // multicast replies are received (CHANGE_WIFI_MULTICAST_STATE).
         multicastGate.acquire()
     }
 
@@ -149,12 +143,9 @@ class DiscoveryService(
 
 private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
     private var listener: NsdManager.DiscoveryListener? = null
-
-    // The framework-delivered NsdServiceInfo per service name. Resolving with
-    // this exact object passes NsdManager's internal validation — reconstructing
-    // an NsdServiceInfo from name+type is rejected ("Service type cannot be
-    // empty") on some Android versions.
     private val foundServices = mutableMapOf<String, NsdServiceInfo>()
+    private val resolveQueue = mutableListOf<Pair<String, (DiscoveredPc?) -> Unit>>()
+    private var isResolving = false
 
     override fun discoverServices(serviceType: String, events: DiscoveryEvents) {
         val l = object : NsdManager.DiscoveryListener {
@@ -180,37 +171,78 @@ private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
     }
 
     override fun stopDiscovery() {
-        listener?.let { nsd.stopServiceDiscovery(it) }
+        listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         listener = null
-        foundServices.clear()
+        synchronized(this) {
+            foundServices.clear()
+            resolveQueue.clear()
+            isResolving = false
+        }
     }
 
+    @Synchronized
     override fun resolve(serviceName: String, onResolved: (DiscoveredPc?) -> Unit) {
-        val info = foundServices[serviceName] ?: return onResolved(null)
+        resolveQueue.add(serviceName to onResolved)
+        processNextResolve()
+    }
+
+    @Synchronized
+    private fun processNextResolve() {
+        if (isResolving || resolveQueue.isEmpty()) return
+        val (serviceName, callback) = resolveQueue.removeAt(0)
+        val info = foundServices[serviceName] ?: run {
+            callback(null)
+            processNextResolve()
+            return
+        }
+
+        isResolving = true
         nsd.resolveService(info, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = onResolved(null)
+            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                synchronized(this@AndroidNsdGateway) {
+                    isResolving = false
+                    callback(null)
+                    processNextResolve()
+                }
+            }
 
             override fun onServiceResolved(resolved: NsdServiceInfo) {
-                val host = resolved.host?.hostAddress ?: return onResolved(null)
-                val txtName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    resolved.attributes?.get("name")?.let { String(it, Charsets.UTF_8) }
-                } else {
-                    null
-                }
-                onResolved(
-                    DiscoveredPc(
-                        serviceName = resolved.serviceName,
-                        displayName = txtName ?: resolved.serviceName,
-                        host = host,
-                        port = resolved.port
+                synchronized(this@AndroidNsdGateway) {
+                    isResolving = false
+                    val rawHost = resolved.host?.hostAddress
+                    if (rawHost == null) {
+                        callback(null)
+                        processNextResolve()
+                        return
+                    }
+
+                    val cleanHost = rawHost.split("%").firstOrNull() ?: rawHost
+                    val txtName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        resolved.attributes?.get("name")?.let { String(it, Charsets.UTF_8) }
+                    } else {
+                        null
+                    }
+
+                    callback(
+                        DiscoveredPc(
+                            serviceName = resolved.serviceName,
+                            displayName = txtName ?: resolved.serviceName,
+                            host = cleanHost,
+                            port = resolved.port
+                        )
                     )
-                )
+                    processNextResolve()
+                }
             }
         })
     }
 }
 
 private class AndroidMulticastGate(private val lock: WifiManager.MulticastLock) : MulticastGate {
-    override fun acquire() = lock.acquire()
-    override fun release() = lock.release()
+    override fun acquire() {
+        try { if (!lock.isHeld) lock.acquire() } catch (_: Exception) {}
+    }
+    override fun release() {
+        try { if (lock.isHeld) lock.release() } catch (_: Exception) {}
+    }
 }
