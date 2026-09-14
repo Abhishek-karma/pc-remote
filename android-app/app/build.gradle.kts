@@ -14,7 +14,7 @@ android {
         targetSdk = 35
         // CI injects these from the Git tag (docs/15-DEPLOYMENT.md §3).
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 5
-        versionName = (project.findProperty("versionName") as String?) ?: "0.1.3"
+        versionName = (project.findProperty("versionName") as String?) ?: "0.1.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
