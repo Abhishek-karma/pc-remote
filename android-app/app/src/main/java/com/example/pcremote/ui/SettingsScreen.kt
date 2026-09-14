@@ -54,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -374,6 +375,15 @@ fun SettingsScreen(
         }
 
         // --- SECTION 4: ABOUT ---
+        val context = LocalContext.current
+        val appVersionName = remember(context) {
+            try {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.3"
+            } catch (_: Exception) {
+                "0.1.3"
+            }
+        }
+
         SettingsGroup(title = "SYSTEM INFO", icon = Icons.Outlined.Info) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -385,7 +395,7 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "v1.0.0 (Production Release)",
+                    text = "v$appVersionName",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
             }
