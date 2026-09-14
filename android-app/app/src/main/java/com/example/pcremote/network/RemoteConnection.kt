@@ -34,6 +34,8 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, AWAITING_PAIRING, CONNECT
  */
 @Serializable
 data class RemoteMessage(
+    val version: Int = 1,
+    val requestId: String? = null,
     val type: String,
     val reason: String? = null,
     val dx: Int? = null,
@@ -45,7 +47,9 @@ data class RemoteMessage(
     val text: String? = null,
     val token: String? = null,
     val pairingCode: String? = null,
-    val pcName: String? = null
+    val pcName: String? = null,
+    val success: Boolean? = null,
+    val errorCode: String? = null
 )
 
 /**
