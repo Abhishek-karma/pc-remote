@@ -4,14 +4,14 @@
 
 **Ultra-low latency, zero-cloud remote control for Windows PCs from Android.**
 
-[![Release](https://img.shields.io/github/v/release/Abhishek-karma/pc-remote?style=for-the-badge&color=00E5FF)](https://github.com/Abhishek-karma/pc-remote/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.2-00E5FF?style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/releases)
 [![License](https://img.shields.io/github/license/Abhishek-karma/pc-remote?style=for-the-badge&color=gray)](LICENSE)
 [![Android CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/android-app-ci.yml?branch=main&label=Android%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/Abhishek-karma/pc-remote/windows-agent-ci.yml?branch=main&label=Windows%20CI&style=for-the-badge)](https://github.com/Abhishek-karma/pc-remote/actions)
 
 Control your cursor, launch shortcuts, type Unicode text, manage media, and trigger system power actions directly over local Wi-Fi.
 
-[Features](#-key-features) • [Architecture](#-architecture--security) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Protocol](#-protocol-specification) • [Building](#-building-from-source)
+[Features](#-key-features) • [Architecture](#-architecture--security) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Protocol](#-protocol-specification) • [Security](#-security--privacy-statement) • [Building](#-building-from-source)
 
 </div>
 
@@ -123,39 +123,59 @@ cd android-app
 
 ## 📡 Protocol Specification
 
-The agent exposes a WebSocket endpoint (`wss://<IP>:58642`). Messages are exchanged as lightweight JSON frames.
+The agent exposes a hardened WebSocket endpoint (`wss://<IP>:58642`). Messages are exchanged as lightweight JSON frames with protocol versioning and request IDs:
 
-### Handshake & Authentication
+### Authentication & Handshake
 ```json
-// Android -> PC (Pairing Request)
-{ "type": "pair_request", "pairingCode": "123456", "deviceName": "Pixel 8" }
+// Android -> PC (Pairing / Auth Attempt)
+{
+  "version": 1,
+  "requestId": "req-001",
+  "type": "auth",
+  "pairingCode": "123456",
+  "token": null
+}
 
-// PC -> Android (Pairing Accepted)
-{ "type": "pair_ack", "token": "dpapi_secured_token_value", "pcName": "DESKTOP-ALPHA" }
+// PC -> Android (Auth Success)
+{
+  "version": 1,
+  "requestId": "req-001",
+  "type": "auth_ok",
+  "token": "dpapi_secured_token_value",
+  "pcName": "DESKTOP-ALPHA"
+}
 
-// Android -> PC (Authenticated Connection)
-{ "type": "auth", "token": "dpapi_secured_token_value" }
+// PC -> Android (Auth Failed / Rate Limited)
+{
+  "version": 1,
+  "requestId": "req-001",
+  "type": "auth_failed",
+  "errorCode": "rate_limited" // "invalid_credentials" | "rate_limited"
+}
 ```
 
-### Input Simulation Frames
+### Control & Input Simulation Frames
 ```json
-// Relative Cursor Movement
-{ "type": "mouse_move", "dx": -14, "dy": 8 }
+// Relative Cursor Movement (clamped to [-4096, 4096])
+{ "version": 1, "requestId": "req-002", "type": "mouse_move", "dx": -14, "dy": 8 }
 
 // Mouse Click / Drag
-{ "type": "mouse_click", "button": "left", "action": "down" } // "down" | "up" | "click"
+{ "version": 1, "requestId": "req-003", "type": "mouse_click", "button": "left", "action": "down" } // "down" | "up" | "click"
 
 // Function & Navigation Keypress
-{ "type": "key_press", "key": "F5", "modifiers": ["CTRL"] }
+{ "version": 1, "requestId": "req-004", "type": "key_press", "key": "F5", "modifiers": ["CTRL"] }
 
-// Unicode Text Typing
-{ "type": "text_input", "text": "Hello, World! 🚀" }
+// Unicode Text Typing (max 1,000 characters)
+{ "version": 1, "requestId": "req-005", "type": "text_input", "text": "Hello, World! 🚀" }
 
 // Media Action
-{ "type": "media_key", "action": "play_pause" } // "volume_up" | "volume_down" | "mute" | "next" | "prev"
+{ "version": 1, "requestId": "req-006", "type": "media_control", "action": "play_pause" } // "vol_up" | "vol_down" | "mute" | "next" | "prev"
 
 // Power Management
-{ "type": "power_action", "action": "lock" } // "sleep" | "restart" | "shutdown"
+{ "version": 1, "requestId": "req-007", "type": "system_power", "action": "lock" } // "sleep" | "restart" | "shutdown"
+
+// Structured Execution Response (PC -> Android)
+{ "version": 1, "requestId": "req-002", "type": "command_result", "success": true }
 ```
 
 ---
@@ -163,8 +183,8 @@ The agent exposes a WebSocket endpoint (`wss://<IP>:58642`). Messages are exchan
 ## 🔒 Security & Privacy Statement
 
 - **Strict Local Scope**: All communications take place strictly between the Android device and Windows PC on the local area network.
-- **No Third-Party Dependencies**: No remote servers, no STUN/TURN relays, no diagnostic telemetry, and no account requirements.
-- **Hardware Isolation**: Win32 input simulation runs under the active logged-in user context without requiring Windows Administrator elevation.
+- **Zero Cloud**: No remote servers, no STUN/TURN relays, no diagnostic telemetry, and no accounts required.
+- **Hardened Security Policy**: Detailed in [SECURITY.md](SECURITY.md) and audited in [AUDIT.md](AUDIT.md). Includes cryptographic RNG pairing codes, per-IP rate-limiting/lockout, 64 KiB frame caps, RFC 6455 frame masking enforcement, and automatic key/button release on disconnect.
 
 ---
 
