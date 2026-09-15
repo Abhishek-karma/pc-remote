@@ -137,12 +137,25 @@ public static class Program
             catch (OperationCanceledException) { }
         }, CancellationToken.None);
 
+        FirewallHelper.EnsureFirewallRules();
+
         MdnsAdvertiser.Start(Port);
 
         var cert = CertificateManager.LoadOrCreate();
 
-        _listener = new TcpListener(IPAddress.Any, Port);
-        _listener.Start();
+        try
+        {
+            _listener = new TcpListener(IPAddress.IPv6Any, Port);
+            _listener.Server.DualMode = true;
+            _listener.ExclusiveAddressUse = true;
+            _listener.Start();
+        }
+        catch
+        {
+            _listener = new TcpListener(IPAddress.Any, Port);
+            _listener.ExclusiveAddressUse = true;
+            _listener.Start();
+        }
 
         while (!ct.IsCancellationRequested)
         {

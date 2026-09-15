@@ -217,9 +217,13 @@ class RemoteConnection(
                 if (intentionallyClosed || expectedDisconnect) {
                     _state.value = ConnectionState.DISCONNECTED
                 } else if (t.isCertificateProblem()) {
-                    // A changed server certificate for a pinned host cannot be
-                    // fixed by retrying — surface the failure for re-pairing.
-                    _state.value = ConnectionState.FAILED
+                    // Automatically clear stale pin for host on certificate error so next reconnect re-pins (TOFU)
+                    pinStore.clearPin(host)
+                    if (!authFailed && tokenStore.getToken(host) != null) {
+                        scheduleReconnect(host, port)
+                    } else {
+                        _state.value = ConnectionState.FAILED
+                    }
                 } else if (!authFailed && tokenStore.getToken(host) != null) {
                     scheduleReconnect(host, port)
                 } else {

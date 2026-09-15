@@ -14,7 +14,7 @@
     <!-- Single source of truth for the version (docs/15-DEPLOYMENT.md §3).
          Release CI overrides this with -p:Version=<git tag>; keep this default in
          sync with android-app's versionName. -->
-    <VersionPrefix>0.1.4</VersionPrefix>
+    <VersionPrefix>0.1.5</VersionPrefix>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
     <Product>PC Remote Agent</Product>

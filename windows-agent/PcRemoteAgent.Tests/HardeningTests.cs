@@ -20,6 +20,13 @@ public class HardeningTests : IDisposable
     private PairingStore NewStore() => new(_tempFile);
 
     [Fact]
+    public void FirewallHelperDoesNotThrow()
+    {
+        var exception = Record.Exception(() => FirewallHelper.EnsureFirewallRules());
+        Assert.Null(exception);
+    }
+
+    [Fact]
     public void PairingCodeIs6DigitsAndNumeric()
     {
         var store = NewStore();
