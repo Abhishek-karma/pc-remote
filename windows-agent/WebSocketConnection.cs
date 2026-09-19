@@ -16,6 +16,7 @@ public class WebSocketConnection : IDisposable
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly Stream _stream;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private WebSocketConnection(Stream stream)
     {
@@ -265,9 +266,21 @@ public class WebSocketConnection : IDisposable
         }
         ms.Write(payload);
 
-        await _stream.WriteAsync(ms.ToArray());
-        await _stream.FlushAsync();
+        await _sendLock.WaitAsync();
+        try
+        {
+            await _stream.WriteAsync(ms.ToArray());
+            await _stream.FlushAsync();
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
-    public void Dispose() => _stream.Dispose();
+    public void Dispose()
+    {
+        _sendLock.Dispose();
+        _stream.Dispose();
+    }
 }

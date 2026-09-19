@@ -66,14 +66,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }), TaskContinuationOptions.OnlyOnFaulted);
     }
 
-    private void ShowCode() =>
-        _tray.ShowBalloonTip(4000, "PC Remote",
-            $"Pairing code: {Program.CurrentPairingCode} (valid 5 minutes)", ToolTipIcon.None);
+    private void ShowCode()
+    {
+        // Code is already visible in context menu _codeItem.Text; balloon removed to avoid leaking code to Windows Notification Center history.
+    }
 
     /// <summary>The exe's embedded brand icon, with a safe fallback.</summary>
     private static Icon LoadIcon()
     {
-        try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application; }
+        try {
+            string exePath = Environment.ProcessPath ?? Application.ExecutablePath;
+            return Icon.ExtractAssociatedIcon(exePath) ?? SystemIcons.Application;
+        }
         catch { return SystemIcons.Application; }
     }
 
@@ -111,8 +115,9 @@ internal static class StartupToggle
     public static void Set(bool enabled)
     {
         using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey);
+        string exePath = Environment.ProcessPath ?? Application.ExecutablePath;
         if (enabled)
-            key.SetValue(ValueName, $"\"{Application.ExecutablePath}\"");
+            key.SetValue(ValueName, $"\"{exePath}\"");
         else
             key.DeleteValue(ValueName, throwOnMissingValue: false);
     }

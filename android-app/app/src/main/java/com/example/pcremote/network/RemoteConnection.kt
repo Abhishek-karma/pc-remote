@@ -217,8 +217,8 @@ class RemoteConnection(
                 if (intentionallyClosed || expectedDisconnect) {
                     _state.value = ConnectionState.DISCONNECTED
                 } else if (t.isCertificateProblem()) {
-                    // A changed server certificate for a pinned host cannot be
-                    // fixed by retrying — surface the failure for re-pairing.
+                    // Do NOT auto-clear pin on failure (security risk: MITM certificate poisoning vector).
+                    // Pins are cleared only via explicit user action.
                     _state.value = ConnectionState.FAILED
                 } else if (!authFailed && tokenStore.getToken(host) != null) {
                     scheduleReconnect(host, port)
@@ -312,7 +312,11 @@ class RemoteConnection(
 
     private fun sendRaw(message: RemoteMessage) {
         val text = json.encodeToString(message)
-        webSocket?.send(text)
+        val sent = webSocket?.send(text) ?: false
+        if (!sent && _state.value == ConnectionState.CONNECTED) {
+            android.util.Log.w("RemoteConnection", "WebSocket send failed for type=${message.type}")
+            currentHostInternal?.let { h -> scheduleReconnect(h, currentPortInternal) }
+        }
     }
 }
 

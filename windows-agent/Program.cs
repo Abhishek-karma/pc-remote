@@ -137,12 +137,25 @@ public static class Program
             catch (OperationCanceledException) { }
         }, CancellationToken.None);
 
+        FirewallHelper.EnsureFirewallRules();
+
         MdnsAdvertiser.Start(Port);
 
         var cert = CertificateManager.LoadOrCreate();
 
-        _listener = new TcpListener(IPAddress.Any, Port);
-        _listener.Start();
+        try
+        {
+            _listener = new TcpListener(IPAddress.IPv6Any, Port);
+            _listener.Server.DualMode = true;
+            _listener.ExclusiveAddressUse = true;
+            _listener.Start();
+        }
+        catch
+        {
+            _listener = new TcpListener(IPAddress.Any, Port);
+            _listener.ExclusiveAddressUse = true;
+            _listener.Start();
+        }
 
         while (!ct.IsCancellationRequested)
         {
@@ -441,6 +454,25 @@ public static class Program
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (ni.OperationalStatus != OperationalStatus.Up) continue;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
+
+            string name = ni.Name ?? "";
+            string desc = ni.Description ?? "";
+            if (name.Contains("Virtual", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("WSL", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("vEthernet", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("VMware", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("VirtualBox", StringComparison.OrdinalIgnoreCase) ||
+                desc.Contains("Virtual", StringComparison.OrdinalIgnoreCase) ||
+                desc.Contains("WSL", StringComparison.OrdinalIgnoreCase) ||
+                desc.Contains("vEthernet", StringComparison.OrdinalIgnoreCase) ||
+                desc.Contains("VMware", StringComparison.OrdinalIgnoreCase) ||
+                desc.Contains("VirtualBox", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             foreach (var addr in ni.GetIPProperties().UnicastAddresses)
             {
                 if (addr.Address.AddressFamily == AddressFamily.InterNetwork &&
@@ -539,6 +571,19 @@ public static class Win32Input
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
 
+    private static bool Send(INPUT[] inputs)
+    {
+        if (inputs.Length == 0) return true;
+        uint res = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (res == 0)
+        {
+            int err = Marshal.GetLastWin32Error();
+            Console.WriteLine($"[!] SendInput returned 0, error={err} (UIPI blocked elevated window target or invalid param)");
+            return false;
+        }
+        return true;
+    }
+
     public static void MoveMouseRelative(int dx, int dy)
     {
         var input = new INPUT
@@ -546,7 +591,7 @@ public static class Win32Input
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE } }
         };
-        SendInput(1, [input], Marshal.SizeOf<INPUT>());
+        Send([input]);
     }
 
     public static void MouseClick(string button, string action)
@@ -559,8 +604,7 @@ public static class Win32Input
         };
 
         void Fire(uint flag) =>
-            SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flag } } }],
-                Marshal.SizeOf<INPUT>());
+            Send([new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flag } } }]);
 
         switch (action)
         {
@@ -577,7 +621,7 @@ public static class Win32Input
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { mouseData = unchecked((uint)(amount * 120)), dwFlags = MOUSEEVENTF_WHEEL } }
         };
-        SendInput(1, [input], Marshal.SizeOf<INPUT>());
+        Send([input]);
     }
 
     private static readonly Dictionary<string, ushort> VkMap = new(StringComparer.OrdinalIgnoreCase)
@@ -676,7 +720,7 @@ public static class Win32Input
             inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wScan = ch, dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP } } });
         }
         if (inputs.Count > 0)
-            SendInput((uint)inputs.Count, [.. inputs], Marshal.SizeOf<INPUT>());
+            Send([.. inputs]);
     }
 
     public static void MediaControl(string action)
