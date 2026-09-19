@@ -29,14 +29,21 @@ class ConnectionForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
+        } catch (e: Exception) {
+            // Android 14+ foreground service start restrictions fallback
+            try {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            } catch (_: Exception) {}
         }
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager

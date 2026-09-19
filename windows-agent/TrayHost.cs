@@ -26,6 +26,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _ui = SynchronizationContext.Current ?? new SynchronizationContext();
 
         var menu = new ContextMenuStrip();
+        _ = menu.Handle; // Force HWND creation on UI thread for thread-safe BeginInvoke
         menu.Items.Add(
             new ToolStripMenuItem($"PC Remote {Program.VersionDisplay}") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
@@ -81,7 +82,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch { return SystemIcons.Application; }
     }
 
-    private void OnUi(Action action) => _ui.Post(_ => action(), null);
+    private void OnUi(Action action)
+    {
+        var menu = _tray.ContextMenuStrip;
+        if (menu is { IsDisposed: false, IsHandleCreated: true } && menu.InvokeRequired)
+        {
+            menu.BeginInvoke(action);
+        }
+        else
+        {
+            _ui.Post(_ => action(), null);
+        }
+    }
 
     private void Exit()
     {

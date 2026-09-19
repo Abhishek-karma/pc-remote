@@ -162,11 +162,15 @@ private fun ControlHub(
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-            ContextCompat.startForegroundService(
-                context, Intent(context, ConnectionForegroundService::class.java)
-            )
+            try {
+                ContextCompat.startForegroundService(
+                    context, Intent(context, ConnectionForegroundService::class.java)
+                )
+            } catch (_: Exception) {}
         } else {
-            context.stopService(Intent(context, ConnectionForegroundService::class.java))
+            try {
+                context.stopService(Intent(context, ConnectionForegroundService::class.java))
+            } catch (_: Exception) {}
         }
     }
 

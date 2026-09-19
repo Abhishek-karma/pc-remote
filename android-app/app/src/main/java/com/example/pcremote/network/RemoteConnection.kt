@@ -460,18 +460,36 @@ class SettingsStore(private val prefs: android.content.SharedPreferences) {
     fun removeName(host: String) = prefs.edit().remove(NAME_PREFIX + host).apply()
 }
 
-/** Creates the app's encrypted SharedPreferences (09-SECURITY-PRIVACY.md §4). */
+/** Creates the app's encrypted SharedPreferences with automatic KeyStore recovery (09-SECURITY-PRIVACY.md §4). */
 object EncryptedPrefs {
     fun create(context: android.content.Context): android.content.SharedPreferences {
-        val masterKey = androidx.security.crypto.MasterKey.Builder(context)
-            .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return androidx.security.crypto.EncryptedSharedPreferences.create(
-            context,
-            "pc_remote_prefs",
-            masterKey,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        return try {
+            val masterKey = androidx.security.crypto.MasterKey.Builder(context)
+                .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            androidx.security.crypto.EncryptedSharedPreferences.create(
+                context,
+                "pc_remote_prefs",
+                masterKey,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            try {
+                context.deleteSharedPreferences("pc_remote_prefs")
+                val masterKey = androidx.security.crypto.MasterKey.Builder(context)
+                    .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                androidx.security.crypto.EncryptedSharedPreferences.create(
+                    context,
+                    "pc_remote_prefs",
+                    masterKey,
+                    androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            } catch (_: Exception) {
+                context.getSharedPreferences("pc_remote_prefs_fallback", android.content.Context.MODE_PRIVATE)
+            }
+        }
     }
 }

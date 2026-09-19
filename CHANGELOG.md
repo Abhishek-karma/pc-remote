@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-09-19
+
+### Security & Stability
+- **EncryptedSharedPreferences Auto-Recovery**: Added automatic KeyStore corruption recovery and safe fallback on Android to prevent app crashes on open.
+- **Android 14+ Foreground Service Safety**: Added exception safety around `startForegroundService` and `startForeground` to prevent `ForegroundServiceStartNotAllowedException` crashes.
+- **WinForms UI Thread Safety**: Enforced handle creation and `BeginInvoke` dispatching on Windows Agent tray context menu to prevent cross-thread UI exceptions.
+
+### Fixed & Enhanced
+- **UIPI Failure Feedback**: Propagated Win32 `SendInput` return status to report `uipi_blocked` error codes to Android when targeted foreground windows are elevated.
+- **Manual Connection Port Input**: Added explicit port number text field to Android manual IP connection UI.
+- **Legacy Code Cleanup**: Removed obsolete legacy service cleanup logic from `FirewallHelper.cs`.
+
+---
+
 ## [0.1.6] - 2026-09-19
 
 ### Security
