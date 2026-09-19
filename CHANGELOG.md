@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-09-19
+
+### Security
+- **TOFU Certificate Pin Hardening**: Removed automatic pin clearing on TLS handshake errors in Android client to prevent MITM certificate substitution attacks.
+- **Notification Pairing Code Security**: Removed balloon notification pairing code popup on Windows agent to prevent pairing code exposure in Windows Notification Center history.
+
+### Fixed
+- **Android 14+ Foreground Service**: Added `FOREGROUND_SERVICE_DATA_SYNC` type to `ConnectionForegroundService` to fix crashes on Android 14 (API 34+).
+- **Background Sleep Disconnects**: Added `WakeLock` and `WifiLock` acquisition during active Android connections to prevent Doze mode socket drops.
+- **Virtual Network Interface Filtering**: Excluded virtual network adapters (`WSL`, `vEthernet`, `VMware`, `VirtualBox`) from Windows agent IP enumeration and mDNS broadcasts.
+- **WebSocket Frame Concurrency**: Added `SemaphoreSlim` lock around Windows agent `SendFrameAsync` to prevent `SslStream` framing corruption during concurrent writes.
+- **Single-File Startup Path**: Updated Windows agent startup registry key and tray icon loader to use `Environment.ProcessPath`.
+
+---
+
 ## [0.1.5] - 2026-09-15
 
 ### Added
