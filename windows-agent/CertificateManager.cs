@@ -22,6 +22,8 @@ public static class CertificateManager
     /// <summary>
     /// Loads the persisted self-signed certificate, or generates and stores a
     /// new one (SANs: localhost + every local IPv4 so pinning by IP works).
+    /// If the current local IPs are not covered by the saved cert's SANs,
+    /// the cert is regenerated so TLS handshakes succeed after DHCP changes.
     /// Never throws — callers fall back to serving plaintext if TLS setup fails.
     /// </summary>
     public static X509Certificate2 LoadOrCreate()
@@ -32,7 +34,12 @@ public static class CertificateManager
             {
                 var protectedBytes = File.ReadAllBytes(CertFile);
                 var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
-                return new X509Certificate2(pfx);
+                var cert = new X509Certificate2(pfx);
+
+                if (CertCoversCurrentIPs(cert))
+                    return cert;
+
+                Console.WriteLine("[~] Local IPs changed since cert was generated; regenerating certificate");
             }
         }
         catch (Exception ex)
@@ -40,9 +47,35 @@ public static class CertificateManager
             Console.WriteLine($"[!] Could not load saved certificate ({ex.Message}); generating a new one");
         }
 
-        var cert = CreateSelfSigned();
-        Save(cert);
-        return cert;
+        var cert2 = CreateSelfSigned();
+        Save(cert2);
+        return cert2;
+    }
+
+    /// <summary>
+    /// Returns true when all current local IPv4 addresses appear in the
+    /// certificate's Subject Alternative Name extension.
+    /// </summary>
+    private static bool CertCoversCurrentIPs(X509Certificate2 cert)
+    {
+        try
+        {
+            var sanExt = cert.Extensions.OfType<X509Extension>()
+                .FirstOrDefault(e => e.Oid?.Value == "2.5.29.17"); // SAN OID
+            if (sanExt == null) return false;
+
+            var sanText = sanExt.Format(multiLine: true);
+            foreach (var ip in Program.GetLocalIPv4Addresses())
+            {
+                if (!sanText.Contains(ip, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static X509Certificate2 CreateSelfSigned()

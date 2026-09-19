@@ -381,9 +381,13 @@ public static class Program
         switch (msg.Type)
         {
             case "mouse_move":
-                Win32Input.MoveMouseRelative(
+                if (!Win32Input.MoveMouseRelative(
                     Math.Clamp(msg.Dx ?? 0, -4096, 4096),
-                    Math.Clamp(msg.Dy ?? 0, -4096, 4096));
+                    Math.Clamp(msg.Dy ?? 0, -4096, 4096)))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
+                    return;
+                }
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
@@ -395,12 +399,20 @@ public static class Program
                     await SendErrorAsync(socket, msg.RequestId, "bad_field");
                     return;
                 }
-                Win32Input.MouseClick(btn, act);
+                if (!Win32Input.MouseClick(btn, act))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
+                    return;
+                }
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
             case "mouse_scroll":
-                Win32Input.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200));
+                if (!Win32Input.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200)))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
+                    return;
+                }
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
@@ -416,7 +428,11 @@ public static class Program
             case "text_input":
                 var text = msg.Text ?? "";
                 if (text.Length > 1000) text = text[..1000];
-                Win32Input.TypeText(text);
+                if (!Win32Input.TypeText(text))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
+                    return;
+                }
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
@@ -584,17 +600,17 @@ public static class Win32Input
         return true;
     }
 
-    public static void MoveMouseRelative(int dx, int dy)
+    public static bool MoveMouseRelative(int dx, int dy)
     {
         var input = new INPUT
         {
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE } }
         };
-        Send([input]);
+        return Send([input]);
     }
 
-    public static void MouseClick(string button, string action)
+    public static bool MouseClick(string button, string action)
     {
         var (down, up) = button switch
         {
@@ -603,25 +619,25 @@ public static class Win32Input
             _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
         };
 
-        void Fire(uint flag) =>
+        bool Fire(uint flag) =>
             Send([new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = flag } } }]);
 
-        switch (action)
+        return action switch
         {
-            case "down": Fire(down); break;
-            case "up": Fire(up); break;
-            default: Fire(down); Fire(up); break;
-        }
+            "down" => Fire(down),
+            "up" => Fire(up),
+            _ => Fire(down) & Fire(up), // bitwise: always send both
+        };
     }
 
-    public static void Scroll(int amount)
+    public static bool Scroll(int amount)
     {
         var input = new INPUT
         {
             type = INPUT_MOUSE,
             U = new InputUnion { mi = new MOUSEINPUT { mouseData = unchecked((uint)(amount * 120)), dwFlags = MOUSEEVENTF_WHEEL } }
         };
-        Send([input]);
+        return Send([input]);
     }
 
     private static readonly Dictionary<string, ushort> VkMap = new(StringComparer.OrdinalIgnoreCase)
@@ -711,7 +727,7 @@ public static class Win32Input
         return true;
     }
 
-    public static void TypeText(string text)
+    public static bool TypeText(string text)
     {
         var inputs = new List<INPUT>();
         foreach (var ch in text)
@@ -720,7 +736,8 @@ public static class Win32Input
             inputs.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wScan = ch, dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP } } });
         }
         if (inputs.Count > 0)
-            Send([.. inputs]);
+            return Send([.. inputs]);
+        return true;
     }
 
     public static void MediaControl(string action)

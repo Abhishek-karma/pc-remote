@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -44,7 +45,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.pcremote.network.ConnectionState
-import com.example.pcremote.network.EncryptedPrefs
 import com.example.pcremote.network.PinStore
 import com.example.pcremote.network.RemoteConnection
 import com.example.pcremote.network.SettingsStore
@@ -75,24 +75,15 @@ enum class AppScreen(val label: String) {
 
 class MainActivity : ComponentActivity() {
 
+    private val vm: ConnectionViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Encrypted storage for tokens + cert pins (09-SECURITY-PRIVACY.md §4).
-        val prefs = EncryptedPrefs.create(this)
-        val tokenStore = TokenStore(prefs)
-        val settingsStore = SettingsStore(prefs)
-        val pinStore = PinStore(prefs)
-        val connection = RemoteConnection(tokenStore, pinStore) { host, name ->
-            // The agent reports its machine name on auth_ok — remember it so
-            // the UI shows the real PC name, including manual-IP pairings.
-            settingsStore.setName(host, name)
-        }
 
         setContent {
             RemoteTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    val connState by connection.state.collectAsState()
+                    val connState by vm.connection.state.collectAsState()
                     var sessionActive by rememberSaveable { mutableStateOf(false) }
 
                     // Derive session membership from the single connection
@@ -102,27 +93,27 @@ class MainActivity : ComponentActivity() {
                             connState == ConnectionState.CONNECTED -> sessionActive = true
                             // Pairing is required again only when the token was
                             // rejected; expected shutdown ends the session too.
-                            (connState == ConnectionState.FAILED && connection.lastAuthFailed) ||
-                                (connState == ConnectionState.DISCONNECTED && connection.lastDisconnectExpected) ->
+                            (connState == ConnectionState.FAILED && vm.connection.lastAuthFailed) ||
+                                (connState == ConnectionState.DISCONNECTED && vm.connection.lastDisconnectExpected) ->
                                 sessionActive = false
                         }
                     }
 
                     if (sessionActive) {
                         ControlHub(
-                            connection = connection,
-                            tokenStore = tokenStore,
-                            settingsStore = settingsStore,
-                            pinStore = pinStore,
+                            connection = vm.connection,
+                            tokenStore = vm.tokenStore,
+                            settingsStore = vm.settingsStore,
+                            pinStore = vm.pinStore,
                             connState = connState,
                             onSessionEnded = { sessionActive = false }
                         )
                     } else {
                         PairingScreen(
-                            connection = connection,
-                            tokenStore = tokenStore,
-                            settingsStore = settingsStore,
-                            pinStore = pinStore,
+                            connection = vm.connection,
+                            tokenStore = vm.tokenStore,
+                            settingsStore = vm.settingsStore,
+                            pinStore = vm.pinStore,
                             connState = connState,
                             onConnected = { sessionActive = true }
                         )

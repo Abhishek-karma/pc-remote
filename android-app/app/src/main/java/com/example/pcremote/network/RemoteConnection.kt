@@ -58,15 +58,28 @@ data class RemoteMessage(
  * docs/09-SECURITY-PRIVACY.md §2). Later connections to the same host must
  * present the same certificate — a mismatch (e.g. a different agent after a
  * DHCP renumber) fails the TLS handshake instead of silently trusting it.
+ *
+ * Pins are stored under both IP and pcName keys so DHCP lease changes
+ * don't force re-pairing when the machine name is known.
  */
 class PinStore(private val prefs: SharedPreferences) {
-    fun getPin(host: String): String? = prefs.getString("certpin_$host", null)
+    fun getPin(host: String): String? =
+        prefs.getString("certpin_$host", null)
+
+    /** Look up pin by pcName fallback when IP-based pin is missing. */
+    fun getPinByName(pcName: String): String? =
+        prefs.getString("certpin_name_$pcName", null)
 
     /** Records the first-seen pin only; later connections can never rewrite it. */
-    fun recordPin(host: String, fingerprint: String) {
+    fun recordPin(host: String, fingerprint: String, pcName: String? = null) {
+        val edit = prefs.edit()
         if (prefs.getString("certpin_$host", null) == null) {
-            prefs.edit().putString("certpin_$host", fingerprint).apply()
+            edit.putString("certpin_$host", fingerprint)
         }
+        if (pcName != null && prefs.getString("certpin_name_$pcName", null) == null) {
+            edit.putString("certpin_name_$pcName", fingerprint)
+        }
+        edit.apply()
     }
 
     /**
@@ -76,6 +89,13 @@ class PinStore(private val prefs: SharedPreferences) {
      */
     fun clearPin(host: String) {
         prefs.edit().remove("certpin_$host").apply()
+    }
+
+    /** Migrate an IP-based pin entry to cover a new IP (DHCP change). */
+    fun aliasPin(newHost: String, fingerprint: String) {
+        if (prefs.getString("certpin_$newHost", null) == null) {
+            prefs.edit().putString("certpin_$newHost", fingerprint).apply()
+        }
     }
 }
 
@@ -193,12 +213,13 @@ class RemoteConnection(
                 val msg = runCatching { json.decodeFromString<RemoteMessage>(text) }.getOrNull() ?: return
                 when (msg.type) {
                     "auth_ok" -> {
+                        val pcName = msg.pcName
                         activeTrustManagers[host]?.pendingFingerprint?.let { fingerprint ->
-                            pinStore.recordPin(host, fingerprint)
+                            pinStore.recordPin(host, fingerprint, pcName)
                         }
                         activeTrustManagers[host]?.clearPending()
-                        msg.token?.let { tokenStore.saveToken(host, it) }
-                        msg.pcName?.let { onPcName?.invoke(host, it) }
+                        msg.token?.let { tokenStore.saveToken(host, it, pcName) }
+                        pcName?.let { onPcName?.invoke(host, it) }
                         authFailed = false
                         if (_state.value == ConnectionState.RECONNECTING) reconnectAttemptInternal = 0
                         _state.value = ConnectionState.CONNECTED
@@ -273,6 +294,12 @@ class RemoteConnection(
 
     private fun clientFor(host: String): OkHttpClient =
         hostClients.getOrPut(host) {
+            // Only one PC connected at a time; evict stale entries to prevent leak
+            if (hostClients.size >= 3) {
+                val stale = hostClients.keys.first()
+                hostClients.remove(stale)
+                activeTrustManagers.remove(stale)
+            }
             val trustManager = PinningTrustManager(pinStore, host)
             activeTrustManagers[host] = trustManager
             val sslContext = SSLContext.getInstance("TLS")
@@ -361,8 +388,15 @@ private fun X509Certificate.sha256Fingerprint(): String =
  */
 class TokenStore(private val prefs: android.content.SharedPreferences) {
     fun getToken(host: String): String? = prefs.getString("token_$host", null)
-    fun saveToken(host: String, token: String) {
-        prefs.edit().putString("token_$host", token).apply()
+
+    /** Look up token by pcName fallback when IP-based token is missing. */
+    fun getTokenByName(pcName: String): String? = prefs.getString("token_name_$pcName", null)
+
+    fun saveToken(host: String, token: String, pcName: String? = null) {
+        val edit = prefs.edit()
+        edit.putString("token_$host", token)
+        if (pcName != null) edit.putString("token_name_$pcName", token)
+        edit.apply()
     }
 
     /** Removes a saved token locally ("Forget this PC" in Settings). */
@@ -371,7 +405,7 @@ class TokenStore(private val prefs: android.content.SharedPreferences) {
     /** Hosts with a saved token, sorted — feeds the Settings "Paired PCs" list. */
     fun allHosts(): List<String> {
         val prefix = "token_"
-        return prefs.all.keys.filter { it.startsWith(prefix) }
+        return prefs.all.keys.filter { it.startsWith(prefix) && !it.startsWith("token_name_") }
             .map { it.removePrefix(prefix) }
             .sorted()
     }

@@ -16,8 +16,6 @@ public static class FirewallHelper
     {
         if (!OperatingSystem.IsWindows()) return;
 
-        CleanupLegacyService();
-
         try
         {
             var hasTcp = HasRule(TcpRuleName);
@@ -42,28 +40,6 @@ public static class FirewallHelper
         {
             Console.WriteLine($"[!] Firewall auto-config notice: {ex.Message}");
         }
-    }
-
-    private static void CleanupLegacyService()
-    {
-        try
-        {
-            using var proc = Process.Start(new ProcessStartInfo
-            {
-                FileName = "sc.exe",
-                Arguments = "query PCRemoteService",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true
-            });
-            proc?.WaitForExit(2000);
-            if (proc?.ExitCode == 0)
-            {
-                Process.Start(new ProcessStartInfo { FileName = "sc.exe", Arguments = "stop PCRemoteService", CreateNoWindow = true, UseShellExecute = false })?.WaitForExit(2000);
-                Process.Start(new ProcessStartInfo { FileName = "sc.exe", Arguments = "delete PCRemoteService", CreateNoWindow = true, UseShellExecute = false })?.WaitForExit(2000);
-            }
-        }
-        catch { }
     }
 
     public static bool HasRule(string ruleName)

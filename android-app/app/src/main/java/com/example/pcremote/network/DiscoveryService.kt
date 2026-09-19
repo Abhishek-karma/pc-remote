@@ -146,16 +146,24 @@ private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
     private val foundServices = mutableMapOf<String, NsdServiceInfo>()
     private val resolveQueue = mutableListOf<Pair<String, (DiscoveredPc?) -> Unit>>()
     private var isResolving = false
+    private var stopped = false
 
     override fun discoverServices(serviceType: String, events: DiscoveryEvents) {
+        synchronized(this) { stopped = false }
         val l = object : NsdManager.DiscoveryListener {
             override fun onServiceFound(info: NsdServiceInfo) {
-                foundServices[info.serviceName] = info
+                synchronized(this@AndroidNsdGateway) {
+                    if (stopped) return
+                    foundServices[info.serviceName] = info
+                }
                 events.onFound(info.serviceName, info.serviceType)
             }
 
             override fun onServiceLost(info: NsdServiceInfo) {
-                foundServices.remove(info.serviceName)
+                synchronized(this@AndroidNsdGateway) {
+                    if (stopped) return
+                    foundServices.remove(info.serviceName)
+                }
                 events.onLost(info.serviceName)
             }
 
@@ -171,24 +179,26 @@ private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
     }
 
     override fun stopDiscovery() {
-        listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
-        listener = null
         synchronized(this) {
+            stopped = true
             foundServices.clear()
             resolveQueue.clear()
             isResolving = false
         }
+        listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
+        listener = null
     }
 
     @Synchronized
     override fun resolve(serviceName: String, onResolved: (DiscoveredPc?) -> Unit) {
+        if (stopped) { onResolved(null); return }
         resolveQueue.add(serviceName to onResolved)
         processNextResolve()
     }
 
     @Synchronized
     private fun processNextResolve() {
-        if (isResolving || resolveQueue.isEmpty()) return
+        if (stopped || isResolving || resolveQueue.isEmpty()) return
         val (serviceName, callback) = resolveQueue.removeAt(0)
         val info = foundServices[serviceName] ?: run {
             callback(null)
@@ -201,6 +211,7 @@ private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                 synchronized(this@AndroidNsdGateway) {
                     isResolving = false
+                    if (stopped) return
                     callback(null)
                     processNextResolve()
                 }
@@ -209,6 +220,7 @@ private class AndroidNsdGateway(private val nsd: NsdManager) : NsdGateway {
             override fun onServiceResolved(resolved: NsdServiceInfo) {
                 synchronized(this@AndroidNsdGateway) {
                     isResolving = false
+                    if (stopped) return
                     val rawHost = resolved.host?.hostAddress
                     if (rawHost == null) {
                         callback(null)

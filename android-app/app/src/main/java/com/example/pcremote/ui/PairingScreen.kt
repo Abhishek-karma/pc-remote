@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -108,6 +109,7 @@ fun PairingScreen(
     }
 
     var host by remember { mutableStateOf("") }
+    var portText by remember { mutableStateOf("58642") }
     var pairingCode by remember { mutableStateOf("") }
     var showManual by remember { mutableStateOf(false) }
     val connecting = connState == ConnectionState.CONNECTING
@@ -304,18 +306,36 @@ fun PairingScreen(
                 }
 
                 if (showManual) {
-                    OutlinedTextField(
-                        value = host,
-                        onValueChange = { host = it.trim() },
-                        label = { Text("PC IP Address (e.g. 192.168.1.50)") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = host,
+                            onValueChange = { host = it.trim() },
+                            label = { Text("PC IP Address") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        OutlinedTextField(
+                            value = portText,
+                            onValueChange = { portText = it.take(5).filter { c -> c.isDigit() } },
+                            label = { Text("Port") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            ),
+                            modifier = Modifier.width(100.dp)
+                        )
+                    }
 
                     OutlinedTextField(
                         value = pairingCode,
@@ -332,7 +352,8 @@ fun PairingScreen(
 
                     Button(
                         onClick = {
-                            connection.connect(host = host, pairingCode = pairingCode.ifBlank { null })
+                            val parsedPort = portText.toIntOrNull() ?: 58642
+                            connection.connect(host = host, port = parsedPort, pairingCode = pairingCode.ifBlank { null })
                         },
                         enabled = host.isNotBlank() && !connecting,
                         shape = RoundedCornerShape(12.dp),

@@ -121,27 +121,23 @@ fun KeyboardScreen(
         if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
 
-    // Debounced delta-based text streamer
+    // Direct text streaming: send new characters immediately, track deletions precisely
     LaunchedEffect(text) {
         if (text.length == sentLength) return@LaunchedEffect
-        delay(250)
+        delay(150)
+        val newLen = text.length
         when {
-            text.length > sentLength && text.startsWith(text.take(sentLength)) -> {
+            // Characters appended at end (common case: user typing)
+            newLen > sentLength -> {
                 connection.sendText(text.substring(sentLength))
-                sentLength = text.length
             }
-            text.length < sentLength && sentLength > 0 -> {
-                repeat((sentLength - text.length).coerceAtMost(32)) {
-                    connection.sendKey("BACKSPACE")
-                }
-                sentLength = text.length
-            }
-            else -> {
-                repeat(sentLength.coerceAtMost(64)) { connection.sendKey("BACKSPACE") }
-                if (text.isNotEmpty()) connection.sendText(text)
-                sentLength = text.length
+            // Characters deleted (backspace): send exact count of deletions
+            newLen < sentLength -> {
+                val deletes = (sentLength - newLen).coerceAtMost(32)
+                repeat(deletes) { connection.sendKey("BACKSPACE") }
             }
         }
+        sentLength = newLen
     }
 
     fun sendKeyAction(key: String, additionalModifiers: List<String> = emptyList()) {
