@@ -34,7 +34,7 @@ jobs:
         run: >
           dotnet publish PcRemoteAgent.csproj -c Release -r win-x64
           --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false
-          -p:Version="0.1.7-ci.${{ github.run_number }}" --nologo
+          -p:Version="0.1.8-ci.${{ github.run_number }}" --nologo
 
       - name: Validate published executable
         shell: pwsh

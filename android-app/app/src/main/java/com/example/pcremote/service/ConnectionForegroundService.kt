@@ -3,6 +3,7 @@ package com.example.pcremote.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import com.example.pcremote.network.RemoteConnection
 
 /**
  * Keeps the control session alive while the user works in another app.
@@ -21,6 +23,7 @@ class ConnectionForegroundService : Service() {
     companion object {
         const val CHANNEL_ID = "pc_remote_connection"
         const val NOTIFICATION_ID = 1
+        const val ACTION_DISCONNECT = "com.example.pcremote.ACTION_DISCONNECT"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -68,7 +71,14 @@ class ConnectionForegroundService : Service() {
         } catch (_: Exception) {}
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_DISCONNECT) {
+            RemoteConnection.activeInstance?.disconnect()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -84,12 +94,29 @@ class ConnectionForegroundService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val disconnectIntent = Intent(this, ConnectionForegroundService::class.java).apply {
+            action = ACTION_DISCONNECT
+        }
+        val disconnectPendingIntent = PendingIntent.getService(
+            this,
+            0,
+            disconnectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
                 .setContentTitle("PC Remote")
                 .setContentText("Controlling your PC")
                 .setOngoing(true)
+                .addAction(
+                    Notification.Action.Builder(
+                        null,
+                        "Disconnect",
+                        disconnectPendingIntent
+                    ).build()
+                )
                 .build()
         } else {
             @Suppress("DEPRECATION")
@@ -98,6 +125,11 @@ class ConnectionForegroundService : Service() {
                 .setContentTitle("PC Remote")
                 .setContentText("Controlling your PC")
                 .setOngoing(true)
+                .addAction(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    "Disconnect",
+                    disconnectPendingIntent
+                )
                 .build()
         }
     }

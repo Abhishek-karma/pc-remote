@@ -139,6 +139,15 @@ public class PairingStore
         }
     }
 
+    public void ClearAllTokens()
+    {
+        lock (_lock)
+        {
+            _trustedTokens.Clear();
+            SaveTokens();
+        }
+    }
+
     public IReadOnlyCollection<string> TrustedTokens
     {
         get { lock (_lock) return _trustedTokens.ToArray(); }

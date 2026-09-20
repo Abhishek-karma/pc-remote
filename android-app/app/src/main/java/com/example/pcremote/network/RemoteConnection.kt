@@ -161,11 +161,16 @@ class RemoteConnection(
     // banner and any auto-reconnect attempts.
     private var expectedDisconnect = false
 
+    companion object {
+        var activeInstance: RemoteConnection? = null
+    }
+
     /** UI reads this to show "PC is shutting down…" instead of a retry banner. */
     val lastDisconnectExpected: Boolean get() = expectedDisconnect
 
     /** Drops any in-flight reconnect and starts a fresh connection. */
     fun connect(host: String, port: Int = 58642, pairingCode: String? = null) {
+        activeInstance = this
         reconnectJob?.cancel()
         reconnectAttemptInternal = 0
         intentionallyClosed = false

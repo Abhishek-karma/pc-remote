@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-09-20
+
+### Added & Enhanced
+- **Windows Agent GUI Control Panel**: Added a modern dark-themed desktop window displaying live server status, large 6-digit pairing code with quick copy/regenerate buttons, connected device count, local IP address list, and startup toggles.
+- **Self-Installation & Boot Auto-Start**: Windows Agent automatically installs to `%LocalAppData%\PCRemote\PcRemoteAgent.exe` on first launch and configures HKCU auto-start (`--minimized`) to run silently on boot, surviving deletion of original installer executables.
+- **Tray & Window Management**: Added minimize-to-tray on close `(X)`, double-click tray icon to restore GUI, and "Unpair All Devices" security action.
+
+---
+
 ## [0.1.7] - 2026-09-19
 
 ### Security & Stability

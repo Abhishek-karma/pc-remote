@@ -28,6 +28,22 @@ public static class Program
     public static event Action<string>? PairingCodeChanged;
     public static event Action<int>? ConnectedCountChanged;
 
+    public static void GenerateNewPairingCode()
+    {
+        lock (Pairing)
+        {
+            PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
+        }
+    }
+
+    public static void RevokeAllTokens()
+    {
+        lock (Pairing)
+        {
+            Pairing.ClearAllTokens();
+        }
+    }
+
     private static TcpListener? _listener;
     private static Mutex? _singleInstance;
 
@@ -48,6 +64,12 @@ public static class Program
             return;
         }
 
+        // Self-install to %LocalAppData%\PCRemote\PcRemoteAgent.exe if not running from there
+        if (!args.Contains("--no-install") && InstallerHelper.EnsureInstalled())
+        {
+            return;
+        }
+
         _singleInstance = new Mutex(initiallyOwned: true, @"Local\PC-Remote-Agent", out var createdNew);
         if (!createdNew)
         {
@@ -61,7 +83,8 @@ public static class Program
         try
         {
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-            Application.Run(new TrayApplicationContext());
+            bool startMinimized = args.Contains("--minimized");
+            Application.Run(new TrayApplicationContext(startMinimized));
         }
         finally
         {

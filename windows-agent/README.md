@@ -59,21 +59,22 @@ netsh advfirewall firewall add rule name="PC Remote Agent mDNS" dir=in action=al
 
 ## 🚀 Usage & Features
 
-### Standard Tray Execution
-Simply run `PC-Remote-Agent-win-x64.exe` (or `dotnet run` from source).
-- A notification balloon displays the initial 6-digit pairing code upon startup.
-- The system tray context menu provides:
-  - **Live 6-Digit Code**: Displays current code with a one-click "Copy code" action.
-  - **Connection Counter**: Real-time connected client status.
-  - **Run at Startup**: User-level auto-start toggle (HKCU Run entry; no admin privileges required).
-  - **Open Logs Directory**: Direct access to `%AppData%\PcRemoteAgent\logs\`.
-  - **Exit**: Cleanly shuts down active listener loops and mDNS advertisements.
+### Desktop GUI & Self-Installation
+Run `PC-Remote-Agent-win-x64.exe` (or `dotnet run` from source).
+- **Auto-Installation**: Automatically installs to `%LocalAppData%\PCRemote\PcRemoteAgent.exe` and registers Windows startup, ensuring it runs on boot even if the original downloaded file is deleted.
+- **Agent GUI Control Panel**:
+  - **Live Pairing Code**: Displays prominent 6-digit code with "Copy Code" and "New Code" quick triggers.
+  - **Network & IP Info**: Displays active local IP address list (`192.168.x.x:58642`) for manual connections with a "Copy IP" action.
+  - **Device Management**: Shows real-time connected client count with an "Unpair All" quick action.
+  - **Preferences**: Toggles Windows auto-startup and minimize-to-tray on close `(X)`.
+- **System Tray Integration**: Context menu shortcuts for opening GUI, copying pairing code, logs folder, and background execution.
 
-### Console Development Mode
-For development, real-time logging, and terminal output:
+### Background & Console Startup Flags
 ```bash
-dotnet run -- --console
-# or:
+# Run silently in system tray (used on Windows boot)
+PC-Remote-Agent-win-x64.exe --minimized
+
+# Run in terminal console mode for real-time log output
 PC-Remote-Agent-win-x64.exe --console
 ```
 

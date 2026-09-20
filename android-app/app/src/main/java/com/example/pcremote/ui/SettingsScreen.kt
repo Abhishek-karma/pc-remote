@@ -51,7 +51,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -376,18 +378,23 @@ fun SettingsScreen(
 
         // --- SECTION 4: ABOUT ---
         val context = LocalContext.current
+        val scope = rememberCoroutineScope()
+        var checkingUpdate by remember { mutableStateOf(false) }
+        var updateResult by remember { mutableStateOf<com.example.pcremote.network.AndroidUpdateResult?>(null) }
+
         val appVersionName = remember(context) {
             try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.7"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.8"
             } catch (_: Exception) {
-                "0.1.7"
+                "0.1.8"
             }
         }
 
         SettingsGroup(title = "SYSTEM INFO", icon = Icons.Outlined.Info) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 Text(
                     text = "App Version",
@@ -398,6 +405,77 @@ fun SettingsScreen(
                     text = "v$appVersionName",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Check for Updates",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (checkingUpdate) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                checkingUpdate = true
+                                updateResult = com.example.pcremote.network.UpdateChecker.checkForUpdate(appVersionName)
+                                checkingUpdate = false
+                            }
+                        }
+                    ) {
+                        Text("Check Now")
+                    }
+                }
+            }
+
+            updateResult?.let { res ->
+                if (res.hasUpdate) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Update Available: ${res.latestVersion}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Download latest APK release",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                            Button(
+                                onClick = { com.example.pcremote.network.UpdateChecker.openUpdateUrl(context, res.apkUrl) },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Download")
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "You are on the latest version.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),

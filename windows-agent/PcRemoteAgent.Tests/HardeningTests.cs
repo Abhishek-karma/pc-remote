@@ -79,6 +79,28 @@ public class HardeningTests : IDisposable
     }
 
     [Fact]
+    public void ClearAllTokensRemovesAllTrustedTokens()
+    {
+        var store = NewStore();
+        var code = store.GeneratePairingCode();
+        Assert.True(store.TryAuthenticate(null, code, "192.168.1.50"));
+        var t1 = store.IssueTokenIfNeeded(null);
+        var t2 = store.IssueTokenIfNeeded(null);
+
+        Assert.Equal(2, store.TrustedTokens.Count);
+        store.ClearAllTokens();
+        Assert.Empty(store.TrustedTokens);
+        Assert.False(store.TryAuthenticate(t1, null, "192.168.1.50"));
+    }
+
+    [Fact]
+    public void InstallerHelperPathIsValid()
+    {
+        Assert.False(string.IsNullOrWhiteSpace(InstallerHelper.InstalledExePath));
+        Assert.EndsWith("PcRemoteAgent.exe", InstallerHelper.InstalledExePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task WebSocketRejectsUnmaskedClientFrames()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);

@@ -1,11 +1,5 @@
-// PC Remote - tray host
-//
-// The agent's user-facing shell (Phase B): a NotifyIcon with the live pairing
-// code, connected-device count, a "Run at startup" toggle (HKCU Run key —
-// user level, no admin rights), a logs shortcut, and Exit. A balloon shows
-// the pairing code on start and on every rotation. All server lifecycle is
-// in Program.StartServerAsync/StopServer — this class only marshals events
-// to the UI thread and renders them.
+// PC Remote - Tray Host & Application Context
+// Manages system tray NotifyIcon, main GUI window (AgentForm), server lifecycle, and Windows startup registration.
 
 namespace PcRemoteAgent;
 
@@ -13,22 +7,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly SynchronizationContext _ui;
     private readonly NotifyIcon _tray = new();
+    private readonly AgentForm _mainForm;
     private readonly ToolStripMenuItem _codeItem = new("Pairing code: —") { Enabled = false };
     private readonly ToolStripMenuItem _devicesItem = new("No devices connected") { Enabled = false };
     private readonly ToolStripMenuItem _startupItem =
         new("Run at startup") { CheckOnClick = true, Checked = StartupToggle.IsEnabled() };
     private readonly CancellationTokenSource _cts = new();
 
-    public TrayApplicationContext()
+    public TrayApplicationContext(bool startMinimized = false)
     {
-        // WinForms installs this context as soon as the first control (the
-        // NotifyIcon) is created — capture it to marshal server events.
         _ui = SynchronizationContext.Current ?? new SynchronizationContext();
+
+        _mainForm = new AgentForm();
+        MainForm = _mainForm;
 
         var menu = new ContextMenuStrip();
         _ = menu.Handle; // Force HWND creation on UI thread for thread-safe BeginInvoke
-        menu.Items.Add(
-            new ToolStripMenuItem($"PC Remote {Program.VersionDisplay}") { Enabled = false });
+        menu.Items.Add(new ToolStripMenuItem("Open PC Remote", null, (_, _) => ShowGuiWindow()));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_codeItem);
         menu.Items.Add("Copy pairing code", null, (_, _) => Clipboard.SetText(Program.CurrentPairingCode));
@@ -36,6 +31,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_startupItem);
         menu.Items.Add("Open logs folder", null, (_, _) => AgentLog.OpenLogsFolder());
+        menu.Items.Add("Check for updates...", null, async (_, _) =>
+        {
+            var res = await AppUpdater.CheckForUpdateAsync();
+            if (res.UpdateAvailable)
+            {
+                var choice = MessageBox.Show(
+                    $"A new version ({res.LatestVersion}) of PC Remote Agent is available!\n\nDo you want to download and update now?",
+                    "Update Available",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (choice == DialogResult.Yes)
+                {
+                    await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl);
+                }
+            }
+            else
+            {
+                MessageBox.Show("You are running the latest version of PC Remote Agent.", "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Exit());
 
@@ -43,14 +58,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Text = "PC Remote — starting…";
         _tray.ContextMenuStrip = menu;
         _tray.Visible = true;
-        _tray.DoubleClick += (_, _) => ShowCode();
+        _tray.DoubleClick += (_, _) => ShowGuiWindow();
 
         Program.PairingCodeChanged += code => OnUi(() =>
         {
             _codeItem.Text = $"Pairing code: {code}";
             _tray.Text = $"PC Remote — {Environment.MachineName}";
-            ShowCode();
         });
+
         Program.ConnectedCountChanged += n => OnUi(() =>
             _devicesItem.Text = n == 1 ? "1 device connected" : $"{n} devices connected");
 
@@ -65,11 +80,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _tray.Text = "PC Remote — error";
                 _tray.ShowBalloonTip(6000, "PC Remote", $"Agent failed to start: {reason}", ToolTipIcon.Error);
             }), TaskContinuationOptions.OnlyOnFaulted);
+
+        if (!startMinimized)
+        {
+            ShowGuiWindow();
+        }
     }
 
-    private void ShowCode()
+    private void ShowGuiWindow()
     {
-        // Code is already visible in context menu _codeItem.Text; balloon removed to avoid leaking code to Windows Notification Center history.
+        if (_mainForm.IsDisposed) return;
+        _mainForm.Show();
+        _mainForm.WindowState = FormWindowState.Normal;
+        _mainForm.BringToFront();
+        _mainForm.Activate();
     }
 
     /// <summary>The exe's embedded brand icon, with a safe fallback.</summary>
@@ -111,7 +135,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
 /// <summary>
 /// "Run at startup" persisted in the HKCU Run key: user level (no admin),
-/// points at the current executable path.
+/// points at the installed executable path in LocalAppData.
 /// </summary>
 internal static class StartupToggle
 {
@@ -127,11 +151,12 @@ internal static class StartupToggle
     public static void Set(bool enabled)
     {
         using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey);
-        string exePath = Environment.ProcessPath ?? Application.ExecutablePath;
+        string exePath = InstallerHelper.InstalledExePath;
+        if (!File.Exists(exePath)) exePath = Environment.ProcessPath ?? Application.ExecutablePath;
+
         if (enabled)
-            key.SetValue(ValueName, $"\"{exePath}\"");
+            key.SetValue(ValueName, $"\"{exePath}\" --minimized");
         else
             key.DeleteValue(ValueName, throwOnMissingValue: false);
     }
 }
-
