@@ -6,14 +6,14 @@ package com.example.pcremote.network
  * auto-reconnect gives up and hands control back to the user (the banner's
  * Retry action calls [RemoteConnection.reconnectLast]). Pure logic, unit-tested.
  *
- * @param maxDurationMs total time auto-reconnect may keep trying (default 5 min —
- *   long enough to ride out an agent restart, short enough that a dead PC
- *   doesn't leave a forever-silent retry loop).
+ * @param maxDurationMs total time auto-reconnect may keep trying (default 30 min —
+ *   long enough to ride out an agent restart, PC sleep/wake cycle, or extended network
+ *   outage without requiring the user to manually re-pair).
  */
 class ReconnectPolicy(
     private val baseDelayMs: Long = 1_000,
     private val maxDelayMs: Long = 30_000,
-    val maxDurationMs: Long = 5 * 60_000
+    val maxDurationMs: Long = 30 * 60_000
 ) {
     /** Backoff for the Nth attempt (1-based): 1s, 2s, 4s … capped at [maxDelayMs]. */
     fun delayMs(attempt: Int): Long =

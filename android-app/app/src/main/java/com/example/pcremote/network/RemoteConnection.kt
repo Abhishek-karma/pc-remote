@@ -49,7 +49,8 @@ data class RemoteMessage(
     val pairingCode: String? = null,
     val pcName: String? = null,
     val success: Boolean? = null,
-    val errorCode: String? = null
+    val errorCode: String? = null,
+    val connKey: String? = null
 )
 
 /**
@@ -138,6 +139,9 @@ class RemoteConnection(
     private var reconnectStartedAt = 0L
     private val reconnectPolicy = ReconnectPolicy()
     private var intentionallyClosed = false
+    // Server-assigned connection key returned in auth_ok; sent on disconnect so the
+    // server can release the slot immediately without waiting for TCP timeout.
+    private var currentConnKey: String? = null
 
         private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
     val state: StateFlow<ConnectionState> = _state
@@ -196,6 +200,11 @@ class RemoteConnection(
         intentionallyClosed = true
         reconnectJob?.cancel()
         reconnectJob = null
+        // Send disconnect message with our connKey so the server can release the slot immediately.
+        currentConnKey?.let { connKey ->
+            sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "disconnect", connKey = connKey))
+        }
+        currentConnKey = null
         webSocket?.close(1000, "user disconnected")
         webSocket = null
         _state.value = ConnectionState.DISCONNECTED
@@ -225,14 +234,24 @@ class RemoteConnection(
                         activeTrustManagers[host]?.clearPending()
                         msg.token?.let { tokenStore.saveToken(host, it, pcName) }
                         pcName?.let { onPcName?.invoke(host, it) }
+                        currentConnKey = msg.connKey
                         authFailed = false
                         if (_state.value == ConnectionState.RECONNECTING) reconnectAttemptInternal = 0
                         _state.value = ConnectionState.CONNECTED
                     }
                     "auth_failed" -> {
                         activeTrustManagers[host]?.clearPending()
-                        authFailed = true
-                        _state.value = ConnectionState.FAILED
+                        // Only treat rate_limited as a permanent failure (never retry).
+                        // invalid_credentials and other errors are retriable — the client
+                        // will keep attempting to reconnect (Fix: was blocking all retries).
+                        if (msg.errorCode == "rate_limited") {
+                            authFailed = true
+                            _state.value = ConnectionState.FAILED
+                        } else {
+                            // Retriable auth failure: schedule reconnect instead of giving up.
+                            _state.value = ConnectionState.RECONNECTING
+                            scheduleReconnect(host, port)
+                        }
                     }
                     "disconnecting" -> expectedDisconnect = true
                 }

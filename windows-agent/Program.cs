@@ -160,6 +160,31 @@ public static class Program
             catch (OperationCanceledException) { }
         }, CancellationToken.None);
 
+        // Periodic cleanup: removes stale connection slots with no activity for > 60 s.
+        // Handles cases where a client died without sending a clean close frame
+        // (crash, network pull, app kill), preventing stale slots from accumulating.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    var threshold = DateTime.UtcNow.AddSeconds(-60);
+                    List<string> stale;
+                    lock (Connected)
+                    {
+                        stale = Connected.Where(kv => kv.Value < threshold).Select(kv => kv.Key).ToList();
+                        foreach (var key in stale)
+                            Connected.TryRemove(key, out _);
+                    }
+                    if (stale.Count > 0)
+                        Console.WriteLine($"[~] Cleaned up {stale.Count} stale connection slot(s)");
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, CancellationToken.None);
+
         FirewallHelper.EnsureFirewallRules();
 
         MdnsAdvertiser.Start(Port);
@@ -314,7 +339,8 @@ public static class Program
                                 RequestId = msg.RequestId,
                                 Type = "auth_ok",
                                 Token = token,
-                                PcName = AgentInfo.Name
+                                PcName = AgentInfo.Name,
+                                ConnKey = connKey
                             }));
                             Console.WriteLine($"[+] {clientIp} authenticated");
                         }
@@ -470,23 +496,32 @@ public static class Program
                 await SendAckAsync(socket, msg.RequestId);
                 break;
 
-            case "system_power":
-                var powerAct = (msg.Action ?? "").ToLowerInvariant();
-                if (powerAct is not ("sleep" or "lock" or "shutdown" or "restart"))
-                {
-                    await SendErrorAsync(socket, msg.RequestId, "invalid_command");
-                    return;
-                }
-                SystemPower.Execute(powerAct);
-                await SendAckAsync(socket, msg.RequestId);
-                break;
+case "disconnect":
+                    _ = socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                    {
+                        Version = 1,
+                        RequestId = msg.RequestId,
+                        Type = "disconnect_ack"
+                    }));
+                    break;
 
-            default:
-                Console.WriteLine($"[?] Unknown message type: {msg.Type}");
-                await SendErrorAsync(socket, msg.RequestId, "unknown_type");
-                break;
+                case "system_power":
+                    var powerAct = (msg.Action ?? "").ToLowerInvariant();
+                    if (powerAct is not ("sleep" or "lock" or "shutdown" or "restart"))
+                    {
+                        await SendErrorAsync(socket, msg.RequestId, "invalid_command");
+                        return;
+                    }
+                    SystemPower.Execute(powerAct);
+                    await SendAckAsync(socket, msg.RequestId);
+                    break;
+
+                default:
+                    Console.WriteLine($"[?] Unknown message type: {msg.Type}");
+                    await SendErrorAsync(socket, msg.RequestId, "unknown_type");
+                    break;
+            }
         }
-    }
 
     public static IEnumerable<string> GetLocalIPv4Addresses()
     {
@@ -543,6 +578,7 @@ public class RemoteMessage
     [JsonPropertyName("pcName")] public string? PcName { get; set; }
     [JsonPropertyName("success")] public bool? Success { get; set; }
     [JsonPropertyName("errorCode")] public string? ErrorCode { get; set; }
+    [JsonPropertyName("connKey")] public string? ConnKey { get; set; }
 }
 
 // Host machine identity details.
