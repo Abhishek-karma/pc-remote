@@ -56,3 +56,21 @@ AUDIT.md
 
 # --- Release signing material (local only, never commit) ---
 signing/
+
+# Installer build outputs
+windows-agent/installer/staging/
+windows-agent/dist/
+
+# Local agent/tooling scratch output (video composition runs, plan dumps)
+brag-output/
+brag-output-*/
+.agents/
+.zcode/
+.freebuff/
+.testresults/
+
+# Visual Studio / Rider local state
+.vs/
+*.csproj.user
+*.user
+TestResults/

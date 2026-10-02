@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Tray application (WinForms NotifyIcon). It is a UI client only:
+         all server/auth/input logic lives in the service. -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PcRemote.Tray</RootNamespace>
+    <AssemblyName>PCRemoteTray</AssemblyName>
+    <VersionPrefix>0.2.0</VersionPrefix>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <Product>PC Remote</Product>
+    <ApplicationIcon>..\..\app.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
+  </ItemGroup>
+
+</Project>

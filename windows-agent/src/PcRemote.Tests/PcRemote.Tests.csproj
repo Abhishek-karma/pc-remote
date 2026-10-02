@@ -2,12 +2,11 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <!-- Run tests on the newest installed runtime (e.g. a dev box with only
-         .NET 10); CI pins 8.x explicitly, so this never changes what CI covers. -->
-    <RollForward>LatestMajor</RollForward>
+    <RootNamespace>PcRemote.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +16,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PcRemoteAgent.csproj" />
+    <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
+    <ProjectReference Include="..\PcRemote.Service\PcRemote.Service.csproj" />
   </ItemGroup>
 
 </Project>

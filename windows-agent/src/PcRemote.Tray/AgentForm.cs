@@ -1,10 +1,9 @@
-// PC Remote Windows Agent - GUI Main Form
-// Clean modern dark-themed control window for monitoring agent status, pairing code, connected devices, and network IPs.
+// PC Remote Tray - GUI window. Dark control panel fed by service IPC status;
+// no local server state. Update logic lives in the service (signature-verified).
 
-using System.Drawing;
-using System.Windows.Forms;
+using PcRemote.Core;
 
-namespace PcRemoteAgent;
+namespace PcRemote.Tray;
 
 internal sealed class AgentForm : Form
 {
@@ -12,14 +11,14 @@ internal sealed class AgentForm : Form
     private readonly Label _lblStatusText;
     private readonly Label _lblPairingCode;
     private readonly Label _lblDevicesCount;
+    private readonly Label _lblPcState;
     private readonly ComboBox _cmbIpAddresses;
-    private readonly CheckBox _chkStartup;
     private readonly CheckBox _chkMinimizeToTray;
 
     public AgentForm()
     {
-        Text = $"PC Remote Agent v{Program.VersionDisplay}";
-        ClientSize = new Size(460, 530);
+        Text = "PC Remote";
+        ClientSize = new Size(460, 430);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -37,7 +36,7 @@ internal sealed class AgentForm : Form
 
         var lblAppTitle = new Label
         {
-            Text = "PC Remote Agent",
+            Text = "PC Remote",
             Font = new Font("Segoe UI", 14f, FontStyle.Bold),
             ForeColor = Color.FromArgb(235, 240, 245),
             Location = new Point(12, 10),
@@ -48,14 +47,14 @@ internal sealed class AgentForm : Form
         {
             Text = "●",
             Font = new Font("Segoe UI", 12f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(76, 187, 120),
+            ForeColor = Color.FromArgb(180, 180, 180),
             Location = new Point(270, 14),
             AutoSize = true
         };
 
         _lblStatusText = new Label
         {
-            Text = $"Active (Port {Program.Port})",
+            Text = "Checking service…",
             Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
             ForeColor = Color.FromArgb(180, 190, 205),
             Location = new Point(292, 16),
@@ -70,7 +69,7 @@ internal sealed class AgentForm : Form
         var pnlPairing = new Panel
         {
             Location = new Point(16, 76),
-            Size = new Size(428, 140),
+            Size = new Size(428, 120),
             BackColor = Color.FromArgb(34, 37, 54)
         };
 
@@ -85,7 +84,7 @@ internal sealed class AgentForm : Form
 
         _lblPairingCode = new Label
         {
-            Text = FormatPairingCode(Program.CurrentPairingCode),
+            Text = "— — — — — —",
             Font = new Font("Consolas", 26f, FontStyle.Bold),
             ForeColor = Color.FromArgb(100, 180, 250),
             Location = new Point(12, 34),
@@ -96,8 +95,7 @@ internal sealed class AgentForm : Form
         var btnCopyCode = CreateButton("Copy Code", new Point(252, 40), new Size(80, 32));
         btnCopyCode.Click += (_, _) =>
         {
-            var code = Program.CurrentPairingCode;
-            if (!string.IsNullOrEmpty(code))
+            if (_lblPairingCode.Tag is string code && !string.IsNullOrEmpty(code))
             {
                 Clipboard.SetText(code);
                 btnCopyCode.Text = "Copied!";
@@ -108,14 +106,22 @@ internal sealed class AgentForm : Form
         };
 
         var btnNewCode = CreateButton("New Code", new Point(338, 40), new Size(76, 32));
-        btnNewCode.Click += (_, _) => Program.GenerateNewPairingCode();
+        btnNewCode.Click += async (_, _) =>
+        {
+            var code = await ServiceIpc.GeneratePairingCodeAsync();
+            if (code is not null) UpdatePairingCode(code);
+            else MessageBox.Show(
+                "Generating a pairing code requires an elevated PC Remote window.\n\n" +
+                "Close the tray and run PCRemoteTray.exe as administrator.",
+                "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        };
 
         var lblPairingHint = new Label
         {
             Text = "Code valid for 5 minutes. Enter this code in the Android app to pair.",
             Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
             ForeColor = Color.FromArgb(150, 160, 175),
-            Location = new Point(14, 98),
+            Location = new Point(14, 88),
             Size = new Size(400, 24)
         };
 
@@ -128,8 +134,8 @@ internal sealed class AgentForm : Form
         // 3. Network & Connection Card
         var pnlNetwork = new Panel
         {
-            Location = new Point(16, 228),
-            Size = new Size(428, 145),
+            Location = new Point(16, 208),
+            Size = new Size(428, 125),
             BackColor = Color.FromArgb(34, 37, 54)
         };
 
@@ -151,18 +157,18 @@ internal sealed class AgentForm : Form
             AutoSize = true
         };
 
-        var lblIpLabel = new Label
+        _lblPcState = new Label
         {
-            Text = "Local IP address (for manual connect):",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(160, 170, 185),
-            Location = new Point(14, 66),
+            Text = "PC state: —",
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(180, 190, 205),
+            Location = new Point(14, 60),
             AutoSize = true
         };
 
         _cmbIpAddresses = new ComboBox
         {
-            Location = new Point(14, 90),
+            Location = new Point(14, 88),
             Size = new Size(220, 28),
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = Color.FromArgb(48, 52, 74),
@@ -171,7 +177,7 @@ internal sealed class AgentForm : Form
         };
         PopulateIpAddresses();
 
-        var btnCopyIp = CreateButton("Copy IP", new Point(242, 88), new Size(80, 30));
+        var btnCopyIp = CreateButton("Copy IP", new Point(242, 86), new Size(80, 30));
         btnCopyIp.Click += (_, _) =>
         {
             var ip = _cmbIpAddresses.SelectedItem?.ToString();
@@ -185,7 +191,7 @@ internal sealed class AgentForm : Form
             }
         };
 
-        var btnUnpair = CreateButton("Unpair All", new Point(328, 88), new Size(86, 30));
+        var btnUnpair = CreateButton("Unpair All", new Point(328, 86), new Size(86, 30));
         btnUnpair.Click += (_, _) =>
         {
             var res = MessageBox.Show(
@@ -195,97 +201,88 @@ internal sealed class AgentForm : Form
                 MessageBoxIcon.Warning);
             if (res == DialogResult.Yes)
             {
-                Program.RevokeAllTokens();
-                MessageBox.Show("All paired devices have been unpaired.", "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                var ok = ServiceIpc.RevokeAllDevices();
+                MessageBox.Show(ok
+                    ? "All paired devices have been unpaired."
+                    : "Unpair requires an elevated PC Remote window (Run as administrator).",
+                    "PC Remote", MessageBoxButtons.OK,
+                    ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             }
         };
 
         pnlNetwork.Controls.Add(lblNetworkHeader);
         pnlNetwork.Controls.Add(_lblDevicesCount);
-        pnlNetwork.Controls.Add(lblIpLabel);
+        pnlNetwork.Controls.Add(_lblPcState);
         pnlNetwork.Controls.Add(_cmbIpAddresses);
         pnlNetwork.Controls.Add(btnCopyIp);
         pnlNetwork.Controls.Add(btnUnpair);
 
-        // 4. Preferences & Action Footer
+        // 4. Footer
         var pnlPrefs = new Panel
         {
-            Location = new Point(16, 385),
-            Size = new Size(428, 120),
+            Location = new Point(16, 345),
+            Size = new Size(428, 70),
             BackColor = Color.FromArgb(34, 37, 54)
         };
-
-        _chkStartup = new CheckBox
-        {
-            Text = "Run automatically when Windows starts",
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
-            ForeColor = Color.FromArgb(220, 225, 235),
-            Location = new Point(14, 12),
-            Size = new Size(380, 24),
-            Checked = StartupToggle.IsEnabled()
-        };
-        _chkStartup.CheckedChanged += (_, _) => StartupToggle.Set(_chkStartup.Checked);
 
         _chkMinimizeToTray = new CheckBox
         {
             Text = "Minimize to system tray on close (X)",
             Font = new Font("Segoe UI", 9f, FontStyle.Regular),
             ForeColor = Color.FromArgb(220, 225, 235),
-            Location = new Point(14, 40),
+            Location = new Point(14, 12),
             Size = new Size(380, 24),
             Checked = true
         };
 
-        var btnOpenLogs = CreateButton("Open Logs Folder", new Point(14, 76), new Size(130, 30));
+        var btnOpenLogs = CreateButton("Open Logs Folder", new Point(14, 38), new Size(130, 28));
         btnOpenLogs.Click += (_, _) => AgentLog.OpenLogsFolder();
 
-        var btnCheckUpdates = CreateButton("Check Updates", new Point(152, 76), new Size(114, 30));
-        btnCheckUpdates.Click += async (_, _) =>
-        {
-            btnCheckUpdates.Text = "Checking...";
-            btnCheckUpdates.Enabled = false;
-            var res = await AppUpdater.CheckForUpdateAsync();
-            btnCheckUpdates.Enabled = true;
-            btnCheckUpdates.Text = "Check Updates";
-
-            if (res.UpdateAvailable)
-            {
-                var choice = MessageBox.Show(
-                    $"A new version ({res.LatestVersion}) of PC Remote Agent is available!\n\nDo you want to download and update now?",
-                    "Update Available",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Information);
-                if (choice == DialogResult.Yes)
-                {
-                    btnCheckUpdates.Text = "Updating...";
-                    btnCheckUpdates.Enabled = false;
-                    await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl);
-                }
-            }
-            else
-            {
-                MessageBox.Show("You are running the latest version of PC Remote Agent.", "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-        };
-
-        var btnHideTray = CreateButton("Hide to Tray", new Point(310, 76), new Size(104, 30));
-        btnHideTray.Click += (_, _) => Hide();
-
-        pnlPrefs.Controls.Add(_chkStartup);
         pnlPrefs.Controls.Add(_chkMinimizeToTray);
         pnlPrefs.Controls.Add(btnOpenLogs);
-        pnlPrefs.Controls.Add(btnCheckUpdates);
-        pnlPrefs.Controls.Add(btnHideTray);
 
         Controls.Add(pnlHeader);
         Controls.Add(pnlPairing);
         Controls.Add(pnlNetwork);
         Controls.Add(pnlPrefs);
+    }
 
-        // Event subscriptions for dynamic updates
-        Program.PairingCodeChanged += code => BeginInvoke(() => _lblPairingCode.Text = FormatPairingCode(code));
-        Program.ConnectedCountChanged += count => BeginInvoke(() =>
-            _lblDevicesCount.Text = count == 1 ? "1 device connected" : $"{count} device(s) connected");
+    /// <summary>Refreshed by the tray's IPC poll loop.</summary>
+    public void UpdateStatus(ServiceIpc.Status? status)
+    {
+        if (status is null)
+        {
+            _lblStatusDot.ForeColor = Color.FromArgb(220, 90, 90);
+            _lblStatusText.Text = "Service not running";
+            _lblPairingCode.Text = "— — — — — —";
+            _lblPairingCode.Tag = null;
+            _lblDevicesCount.Text = "0 device(s) connected";
+            _lblPcState.Text = "Start the PCRemoteService or reinstall PC Remote.";
+        }
+        else
+        {
+            _lblStatusDot.ForeColor = status.ServiceState == "running"
+                ? Color.FromArgb(76, 187, 120)
+                : Color.FromArgb(230, 170, 60);
+            _lblStatusText.Text = status.ServiceState == "running"
+                ? "Active (Port 58642)"
+                : status.ServiceState;
+            UpdatePairingCode(status.PairingCode);
+            _lblDevicesCount.Text = status.ConnectedDevices switch
+            {
+                null or 0 => "0 device(s) connected",
+                1 => "1 device connected",
+                var n => $"{n} devices connected",
+            };
+            _lblPcState.Text = $"PC state: {status.SessionState ?? "unknown"}";
+        }
+    }
+
+    private void UpdatePairingCode(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return;
+        _lblPairingCode.Tag = code;
+        _lblPairingCode.Text = FormatPairingCode(code);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -304,9 +301,9 @@ internal sealed class AgentForm : Form
     private void PopulateIpAddresses()
     {
         _cmbIpAddresses.Items.Clear();
-        foreach (var ip in Program.GetLocalIPv4Addresses())
+        foreach (var ip in NetworkInfo.GetLocalIPv4Addresses())
         {
-            _cmbIpAddresses.Items.Add($"{ip}:{Program.Port}");
+            _cmbIpAddresses.Items.Add($"{ip}:58642");
         }
         if (_cmbIpAddresses.Items.Count > 0)
         {

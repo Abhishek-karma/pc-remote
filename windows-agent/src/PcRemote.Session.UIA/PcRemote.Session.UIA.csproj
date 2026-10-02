@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PcRemote.Session</RootNamespace>
+    <AssemblyName>PCRemoteSession.UIA</AssemblyName>
+    <VersionPrefix>0.2.0</VersionPrefix>
+    <Product>PC Remote Session Helper (UIAccess)</Product>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- The UIAccess manifest only takes effect when the binary is signed and
+         lives under Program Files (requirement 3). Unsigned dev builds simply
+         fail to launch with this manifest, so the service falls back to the
+         plain helper (see SessionWorkerClient). -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Same input engine as the normal helper: one implementation, two
+       privilege contexts. -->
+  <ItemGroup>
+    <Compile Include="..\PcRemote.Session\InputInjector.cs" Link="InputInjector.cs" />
+    <Compile Include="..\PcRemote.Session\Program.cs" Link="SessionProgram.cs" />
+  </ItemGroup>
+
+</Project>

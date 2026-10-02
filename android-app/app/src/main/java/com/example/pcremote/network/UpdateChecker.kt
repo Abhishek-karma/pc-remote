@@ -20,7 +20,7 @@ data class AndroidUpdateResult(
 )
 
 object UpdateChecker {
-    private const val API_URL = "https://api.github.org/repos/Abhishek-karma/pc-remote/releases/latest"
+    private const val API_URL = "https://api.github.com/repos/Abhishek-karma/pc-remote/releases/latest"
     private val client = OkHttpClient()
     private val json = Json { ignoreUnknownKeys = true }
 

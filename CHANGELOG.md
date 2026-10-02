@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-02
+
+### Architecture (breaking, Windows agent)
+- **Windows Service architecture**: The tray/user process no longer owns the WSS server, pairing state or input engine. A new `PCRemoteService` (LocalSystem, auto-start, SCM recovery restart) owns network communication, authentication/pairing, session detection and privileged operations — reachable before logon, after logoff and across tray crashes.
+- **Session & privilege separation**: New `PCRemoteSession.exe` helper (user token) handles normal desktop input; `PCRemoteSession.exe --secure-input` (SYSTEM token in the console session) handles the Winlogon desktop; an optional signed `PCRemoteSession.UIA.exe` (`uiAccess=true`, Program Files) reaches elevated windows. Clear privilege boundaries — the service never injects input into session 0, the helpers never touch the network.
+- **Ctrl+Alt+Del**: implemented via the documented `SendSAS` API instead of simulated keys.
+- **Authenticated local IPC**: tray and session helpers talk to the service over `\.\pipe\PCRemoteCtl` with per-caller privilege checks (elevated-only for revoke/update/secure input). No unrestricted local TCP.
+- **Project split**: `PcRemote.Core` / `PcRemote.Service` / `PcRemote.Session` / `PcRemote.Session.UIA` / `PcRemote.Tray` / `PcRemote.Tests`.
+
+### Removed
+- **Self-install architecture**: the EXE no longer copies itself to `%LocalAppData%`; replaced by a real Inno Setup installer (`PC-Remote-Setup.exe`) that installs to `C:\Program Files\PC Remote\`, registers the service, configures recovery, creates private-profile/localsubnet firewall rules, and removes legacy installs. The old `profile=any` firewall rule is replaced.
+
+### Security
+- **Updater**: fixed the wrong GitHub API endpoint (`api.github.org` -> `api.github.com`, Windows + Android). The service updater now verifies SHA-256 (release sidecar) and the Authenticode signature via `WinVerifyTrust` before executing any update artifact, stages it, and hands off to the signed installer — it never blindly runs a downloaded EXE.
+- **Stable identity**: the TLS certificate is generated once and never regenerated on IP changes; a stable `pcId` GUID is reported in `auth_ok`/mDNS so DHCP changes no longer force re-pairing.
+- **Token hardening**: pairing tokens are now 256-bit CSPRNG values (was GUID), stored DPAPI-protected under `ProgramData\PCRemote` owned by the service.
+- **Command allowlist** enforced in the service and re-validated inside session helpers; the service rejects anything outside the fixed command set.
+
+### Known limitations (honest status)
+- Screen streaming / real remote-desktop view (Phases 5-6) is not implemented yet; `stream_request` is protocol-reserved. The connected experience is still touchpad/keyboard/media/power.
+- Lock-screen / UAC / elevated-window paths are implemented but **not yet validated on a VM** — see `windows-agent/TEST-MATRIX.md` before claiming production support.
+
+---
+
+
 ## [0.1.8] - 2026-09-20
 
 ### Added & Enhanced

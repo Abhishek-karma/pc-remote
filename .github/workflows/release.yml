@@ -1,8 +1,9 @@
 name: release
 
 # Tag-triggered release: build + validate both platforms, then publish the
-# GitHub Release with checksums. A failed platform blocks the release
-# (docs/15-DEPLOYMENT.md §5).
+# GitHub Release with checksums. Windows produces PC-Remote-Setup.exe (signed
+# when signing secrets are configured) plus a SHA-256 sidecar consumed by the
+# service updater. A failed platform blocks the release.
 
 on:
   push:
@@ -13,7 +14,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows agent
+    name: Windows installer
     runs-on: windows-latest
     defaults:
       run:
@@ -29,51 +30,61 @@ jobs:
         shell: pwsh
         run: echo "version=$($env:GITHUB_REF_NAME -replace '^v','')" >> $env:GITHUB_OUTPUT
 
-      - name: Restore
-        run: dotnet restore PcRemoteAgent.csproj
-      - name: Build
-        run: dotnet build PcRemoteAgent.csproj --no-restore --nologo
-      - name: Test
-        run: dotnet test PcRemoteAgent.Tests/PcRemoteAgent.Tests.csproj --no-restore --nologo
+      - name: Build + test
+        run: |
+          dotnet restore PcRemoteAgent.slnx
+          dotnet build PcRemoteAgent.slnx --no-restore --nologo
+          dotnet test src/PcRemote.Tests/PcRemote.Tests.csproj --no-restore --no-build --nologo
 
-      # v1.2.3 -> version 1.2.3 (docs/15-DEPLOYMENT.md §3).
-      - name: Publish win-x64 (self-contained single-file)
+      - name: Build installer
+        id: build
         shell: pwsh
+        env:
+          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
         run: >
-          dotnet publish PcRemoteAgent.csproj -c Release -r win-x64
-          --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false
-          -p:Version="$env:RELEASE_VERSION" --nologo
+          ./installer/build.ps1
+          -Version "$env:RELEASE_VERSION"
+        # WINDOWS_CERT_PATH/PASSWORD may point to a keyfile checked into the
+        # secret store; when absent the build warns and ships unsigned.
+
+      - name: Validate staged executables (signature/publisher/version)
+        if: ${{ secrets.WINDOWS_CERT_PATH != '' }}
+        shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $staged = @("PCRemoteService.exe","PCRemoteSession.exe","PCRemoteSession.UIA.exe","PCRemoteTray.exe") |
+            ForEach-Object { Get-AuthenticodeSignature "installer/staging/$_" }
+          $invalid = $staged | Where-Object { $_.Status -ne 'Valid' }
+          if ($invalid) { $invalid | ForEach-Object { throw "invalid signature: $($_.Path)" } }
+          ./installer/Validate-Release.ps1 -Path "dist/PC-Remote-Setup.exe" `
+            -ExpectedVersion "$env:RELEASE_VERSION"
 
-      - name: Validate and stage executable
+      - name: Stage release artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          # TFM-scoped path (net8.0-windows) — match any TFM to survive upgrades.
-          $published = Get-ChildItem "bin/Release/*/win-x64/publish/PcRemoteAgent.exe" | Select-Object -First 1
-          if (-not $published) { throw "published PcRemoteAgent.exe not found" }
-          Copy-Item $published.FullName dist/PC-Remote-Agent-win-x64.exe
-          $exe = Get-Item dist/PC-Remote-Agent-win-x64.exe
-          if ($exe.Length -lt 10MB) { throw "published exe is unexpectedly small ($($exe.Length) bytes)" }
-          # Smoke: start, confirm the WSS port binds, stop (listen-only — no input injected).
-          $proc = Start-Process (Resolve-Path dist/PC-Remote-Agent-win-x64.exe) -PassThru
-          try {
-            $ok = $false
-            foreach ($i in 1..20) {
-              Start-Sleep -Seconds 1
-              $ok = (Test-NetConnection -ComputerName 127.0.0.1 -Port 58642 -WarningAction SilentlyContinue).TcpTestSucceeded
-              if ($ok) { break }
-            }
-            if (-not $ok) { throw "agent did not open port 58642 within 20s" }
-          } finally {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          }
+          $setup = Get-ChildItem "dist/PC-Remote-Setup.exe"
+          if (-not $setup) { throw "installer missing" }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content "dist/PC-Remote-Setup.exe.sha256" -Value "$hash  PC-Remote-Setup.exe" -NoNewline
+          echo "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Smoke test — installer present and service exe staged
+        shell: pwsh
+        run: |
+          if ((Get-Item "installer/staging/PCRemoteService.exe").Length -lt 100KB) { throw "service exe unexpectedly small" }
+          if ((Get-Item "installer/staging/PCRemoteTray.exe").Length -lt 100KB) { throw "tray exe unexpectedly small" }
+          if (-not (Test-Path "installer/staging/PCRemoteSession.exe")) { throw "session helper missing" }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pc-remote-windows-agent-win-x64
-          path: windows-agent/dist/PC-Remote-Agent-win-x64.exe
+          name: pc-remote-windows-installer
+          path: |
+            windows-agent/dist/PC-Remote-Setup.exe
+            windows-agent/dist/PC-Remote-Setup.exe.sha256
           if-no-files-found: error
 
   android:
@@ -164,7 +175,7 @@ jobs:
       - name: Generate SHA-256 checksums
         run: |
           cd dist
-          sha256sum PC-Remote-Agent-win-x64.exe PC-Remote-Android*.apk > SHA256SUMS.txt
+          sha256sum PC-Remote-Setup.exe PC-Remote-Android*.apk > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release
@@ -180,7 +191,8 @@ jobs:
             echo "PC Remote $TAG"
             echo ""
             echo "## Windows"
-            echo "- \`PC-Remote-Agent-win-x64.exe\` — self-contained single-file agent (win-x64), no .NET runtime install needed."
+            echo "- \`PC-Remote-Setup.exe\` — full installer (installs the PCRemoteService Windows service, tray UI and session helpers to Program Files). Install once; the PC is then always reachable, including before logon and after reboot."
+            echo "- \`PC-Remote-Setup.exe.sha256\` — digest consumed by the built-in updater; it refuses to install an update that fails SHA-256 + Authenticode verification."
             echo ""
             echo "## Android"
             echo "- \`PC-Remote-Android.apk\` — Android app"
@@ -189,8 +201,9 @@ jobs:
             fi
             echo ""
             echo "## Security"
-            echo "- Local-network only; WSS (TLS) mandatory, no plaintext fallback."
-            echo "- Trust-on-first-use certificate pinning; pairing codes rotate every 5 minutes."
+            echo "- Local-network only (private firewall profiles, local subnet scope); WSS (TLS) mandatory, no plaintext fallback."
+            echo "- Trust-on-first-use certificate pinning with a stable PC identity; IP/DHCP changes do not force re-pairing."
+            echo "- Pairing codes rotate every 5 minutes; input/authentication state is owned by the Windows service, not a user process."
             echo ""
             echo "## Verification"
             echo "- SHA-256 checksums: \`SHA256SUMS.txt\`"
@@ -205,4 +218,3 @@ jobs:
             exit 1
           fi
           echo "$out"
-

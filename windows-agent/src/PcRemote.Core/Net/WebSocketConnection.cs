@@ -6,7 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
-namespace PcRemoteAgent;
+namespace PcRemote.Core;
 
 public class WebSocketConnection : IDisposable
 {
@@ -104,39 +104,78 @@ public class WebSocketConnection : IDisposable
 
     public async Task<string?> ReceiveTextAsync()
     {
+        // RFC 6455 §5.1: a text message may be split across a FIN text frame
+        // followed by any number of continuation (0x0) frames. Previously `fin`
+        // was read but ignored and a continuation opcode fell into `default`,
+        // which silently closed the connection mid-message.
+        var message = new MemoryStream();
+        var inMessage = false;
+        var messageOpcode = 0;
+
         while (true)
         {
             var frame = await ReadFrameAsync();
             if (frame is null) return null;
-            var (opcode, payload) = frame.Value;
+            var (opcode, payload, fin) = frame.Value;
 
-            switch (opcode)
+            if (!inMessage && opcode is not (0x1 or 0x2))
             {
-                case 0x1:
-                    try
-                    {
-                        return StrictUtf8.GetString(payload);
-                    }
-                    catch (DecoderFallbackException)
-                    {
-                        Console.WriteLine("[!] Received invalid UTF-8 payload in text frame");
+                switch (opcode)
+                {
+                    case 0x8:
+                        await SendFrameAsync(0x8, []);
                         return null;
-                    }
-                case 0x8:
-                    await SendFrameAsync(0x8, []);
-                    return null;
-                case 0x9:
-                    await SendFrameAsync(0xA, payload);
-                    break;
-                case 0xA:
-                    break;
-                default:
-                    return null;
+                    case 0x9:
+                        await SendFrameAsync(0xA, payload);
+                        continue;
+                    case 0xA:
+                        continue;
+                    default:
+                        Console.WriteLine($"[!] Unexpected opcode 0x{opcode:X} outside a message");
+                        return null;
+                }
+            }
+
+            if (!inMessage)
+            {
+                inMessage = true;
+                messageOpcode = opcode;
+                message.SetLength(0);
+            }
+            else if (opcode != 0x0)
+            {
+                // A new data frame while a fragmented message is open is a
+                // protocol error.
+                Console.WriteLine("[!] New data frame before the previous message was finished");
+                return null;
+            }
+
+            if (message.Length + payload.Length > MaxPayloadSize)
+            {
+                Console.WriteLine("[!] Fragmented message exceeds the maximum payload limit");
+                return null;
+            }
+            message.Write(payload, 0, payload.Length);
+
+            if (!fin) continue;
+
+            var bytes = message.ToArray();
+            inMessage = false;
+            if (messageOpcode != 0x1) continue; // binary: ignored by this protocol
+
+            try
+            {
+                return StrictUtf8.GetString(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                Console.WriteLine("[!] Received invalid UTF-8 payload in text message");
+                return null;
             }
         }
     }
 
-    private async Task<(byte opcode, byte[] payload)?> ReadFrameAsync()
+    private async Task<(byte opcode, byte[] payload, bool fin)?> ReadFrameAsync()
     {
         var header = new byte[2];
         if (await ReadExactAsync(header, 2) < 2) return null;
@@ -225,7 +264,10 @@ public class WebSocketConnection : IDisposable
             }
         }
 
-        return (opcode, payload);
+        // Control frames (close/ping/pong) must not be fragmented.
+        if (isControlFrame && !fin) return null;
+
+        return (opcode, payload, fin);
     }
 
     private async Task<int> ReadExactAsync(byte[] buffer, int count)

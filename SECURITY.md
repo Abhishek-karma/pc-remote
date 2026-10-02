@@ -47,3 +47,36 @@ If you discover a potential security vulnerability in PC Remote:
 1. Contact the security team privately via email or GitHub Security Advisories.
 2. Provide details of the issue, affected versions, and reproduction steps.
 3. Please do not publicly disclose vulnerabilities until a fix has been released.
+
+---
+
+## 4. Windows Service Architecture (0.2.0+)
+
+As of 0.2.0 the security boundary model changed:
+
+- **Service-owned state**: authentication/pairing tokens and the TLS
+  certificate are owned by `PCRemoteService` (LocalSystem) and stored
+  DPAPI-protected under `%ProgramData%\PCRemote` (ACL: SYSTEM/Administrators).
+  User processes never hold trust state.
+- **Local IPC, not local TCP**: the tray and session helpers communicate only
+  over `\.\pipe\PCRemoteCtl`. Privileged IPC operations (revoke devices,
+  apply updates, drive secure input) require an elevated caller token; the
+  service verifies the client PID's token elevation before honoring them.
+- **Input privilege separation**: normal desktop input is injected by a
+  per-session helper running as the logged-on user; UAC/lock/logon input is
+  injected by a SYSTEM helper inside the interactive session on the Winlogon
+  desktop; Ctrl+Alt+Del is raised with the `SendSAS` API. No global keyboard
+  hooks exist. Remote keystrokes (including lock-screen passwords) are
+  executed and immediately discarded — never logged, persisted, or analyzed.
+  Lock-screen passwords are never copied to the clipboard and never appear in
+  pairing/session history.
+- **Command allowlist**: only the fixed command set (mouse/keyboard/media/
+  power/SAS/session status) is accepted from the network, enforced at the
+  service boundary and re-validated inside every helper. The service is not a
+  remote shell.
+- **Update integrity**: updates are only executed after matching the
+  release-published SHA-256 digest and validating the Authenticode signature
+  chain (`WinVerifyTrust`). Unsigned or tampered artifacts are deleted.
+- **Firewall least exposure**: rules are private/domain profile scoped to the
+  local subnet only (never Public), created by the installer and repaired by
+  the service.

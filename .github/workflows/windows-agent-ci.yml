@@ -8,46 +8,52 @@ on:
     paths: ['windows-agent/**', '.github/workflows/windows-agent-ci.yml']
 
 jobs:
-  build-test-publish:
+  test:
+    name: Build + test
     runs-on: windows-latest
     defaults:
       run:
         working-directory: windows-agent
-    env:
-      DIST: dist
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.x'
           cache: true
-          cache-dependency-path: windows-agent/PcRemoteAgent.csproj
+          cache-dependency-path: windows-agent/src/PcRemote.Core/PcRemote.Core.csproj
 
       - name: Restore
-        run: dotnet restore PcRemoteAgent.csproj
+        run: dotnet restore PcRemoteAgent.slnx
       - name: Build
-        run: dotnet build PcRemoteAgent.csproj --no-restore --nologo
+        run: dotnet build PcRemoteAgent.slnx --no-restore --nologo
       - name: Test
-        run: dotnet test PcRemoteAgent.Tests/PcRemoteAgent.Tests.csproj --no-restore --nologo
+        run: dotnet test src/PcRemote.Tests/PcRemote.Tests.csproj --no-restore --no-build --nologo
 
-      - name: Publish win-x64 (self-contained single-file)
-        run: >
-          dotnet publish PcRemoteAgent.csproj -c Release -r win-x64
-          --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false
-          -p:Version="0.1.8-ci.${{ github.run_number }}" --nologo
+  installer:
+    name: Installer build (staging + ISCC) + smoke test
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+          cache: true
+          cache-dependency-path: windows-agent/src/PcRemote.Core/PcRemote.Core.csproj
 
-      - name: Validate published executable
+      - name: Build installer (unsigned in CI; signing in release)
+        shell: pwsh
+        run: ./installer/build.ps1
+
+      - name: Smoke test — service console mode binds WSS port
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force $env:DIST | Out-Null
-          # TFM-scoped path (net8.0-windows) — match any TFM to survive upgrades.
-          $published = Get-ChildItem "bin/Release/*/win-x64/publish/PcRemoteAgent.exe" | Select-Object -First 1
-          if (-not $published) { throw "published PcRemoteAgent.exe not found" }
-          Copy-Item $published.FullName "$env:DIST/PC-Remote-Agent-win-x64.exe"
-          $exe = Get-Item "$env:DIST/PC-Remote-Agent-win-x64.exe"
-          if ($exe.Length -lt 10MB) { throw "published exe is unexpectedly small ($($exe.Length) bytes)" }
-          # Smoke: start, confirm the WSS port binds, stop (listen-only — no input injected).
-          $proc = Start-Process $exe.FullName -PassThru
+          $svc = "installer/staging/PCRemoteService.exe"
+          if (-not (Test-Path $svc)) { throw "staged PCRemoteService.exe not found" }
+          # Console mode runs the same code path as the service without SCM.
+          $proc = Start-Process (Resolve-Path $svc) -ArgumentList "--console" -PassThru
           try {
             $ok = $false
             foreach ($i in 1..20) {
@@ -55,14 +61,14 @@ jobs:
               $ok = (Test-NetConnection -ComputerName 127.0.0.1 -Port 58642 -WarningAction SilentlyContinue).TcpTestSucceeded
               if ($ok) { break }
             }
-            if (-not $ok) { throw "agent did not open port 58642 within 20s" }
+            if (-not $ok) { throw "service did not open port 58642 within 20s" }
           } finally {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Upload exe artifact
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pc-remote-windows-agent-win-x64
-          path: windows-agent/dist/PC-Remote-Agent-win-x64.exe
+          name: pc-remote-windows-installer
+          path: windows-agent/dist/PC-Remote-Setup.exe
           if-no-files-found: error
