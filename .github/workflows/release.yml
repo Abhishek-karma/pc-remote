@@ -49,12 +49,18 @@ jobs:
         # WINDOWS_CERT_PATH/PASSWORD may point to a keyfile checked into the
         # secret store; when absent the build warns and ships unsigned.
 
+      # The secrets context is not available in step-level `if:` — the
+      # certificate presence check happens inside the script via env instead.
       - name: Validate staged executables (signature/publisher/version)
-        if: ${{ secrets.WINDOWS_CERT_PATH != '' }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
         run: |
+          if (-not $env:WINDOWS_CERT_PATH) {
+            Write-Warning "No signing certificate configured; skipping signature validation (unsigned dev release)."
+            exit 0
+          }
           $staged = @("PCRemoteService.exe","PCRemoteSession.exe","PCRemoteSession.UIA.exe","PCRemoteTray.exe") |
             ForEach-Object { Get-AuthenticodeSignature "installer/staging/$_" }
           $invalid = $staged | Where-Object { $_.Status -ne 'Valid' }
