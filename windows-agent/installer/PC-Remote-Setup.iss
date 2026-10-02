@@ -61,10 +61,11 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
 Source: "staging\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-; Service-owned data directory with restrictive ACL (created explicitly so the
-; installer can tighten it before the first service start). SID names are
-; Inno's built-in constants: Admins/Users (plural), System (no plural).
-Name: "{commonappdata}\PCRemote"; Permissions: "System-modify Admins-modify Users-read"
+; Service-owned data directory, least privilege: SYSTEM full, Admins modify.
+; No Users entry at all — DPAPI LocalMachine blobs (pairing tokens) are
+; decryptable by any local process, so the directory must not be world-readable.
+; Access types for [Dirs] are full|modify|readexec only.
+Name: "{commonappdata}\PCRemote"; Permissions: "System-full Admins-modify"
 
 [Icons]
 Name: "{group}\PC Remote"; Filename: "{app}\{#MyAppExeName}"
