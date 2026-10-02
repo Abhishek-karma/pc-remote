@@ -62,8 +62,9 @@ Source: "staging\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs creat
 
 [Dirs]
 ; Service-owned data directory with restrictive ACL (created explicitly so the
-; installer can tighten it before the first service start).
-Name: "{commonappdata}\PCRemote"; Permissions: "SYSTEM-modify Administrators-modify Users-read"
+; installer can tighten it before the first service start). SID names are
+; Inno's built-in constants: Admins/Users (plural), System (no plural).
+Name: "{commonappdata}\PCRemote"; Permissions: "System-modify Admins-modify Users-read"
 
 [Icons]
 Name: "{group}\PC Remote"; Filename: "{app}\{#MyAppExeName}"

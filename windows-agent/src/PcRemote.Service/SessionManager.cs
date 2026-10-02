@@ -62,6 +62,17 @@ public sealed class SessionManager : IDisposable
     public void Start()
     {
         _consoleSessionId = WTSGetActiveConsoleSessionId();
+
+        // SCM recovery can restart the service while a user is already logged
+        // on — the WTS_SESSION_LOGON event happened before we existed, so
+        // probe the console session for a live user token instead of waiting
+        // for an event that will never come.
+        if (_consoleSessionId != 0 && WTSQueryUserToken(_consoleSessionId, out var existingToken))
+        {
+            _userLoggedOn = true;
+            existingToken.Dispose();
+        }
+
         _messageThread = new Thread(MessageLoop)
         {
             Name = "SessionManager-WTS",
@@ -292,6 +303,10 @@ public sealed class SessionManager : IDisposable
 
     [DllImport("kernel32.dll")]
     private static extern uint WTSGetActiveConsoleSessionId();
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(uint sessionId,
+        out Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token);
 
     [DllImport("wtsapi32.dll")]
     private static extern bool WTSRegisterSessionNotification(IntPtr hWnd, uint flags);
