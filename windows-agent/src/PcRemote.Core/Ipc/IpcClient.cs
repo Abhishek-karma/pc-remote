@@ -83,6 +83,13 @@ public static class IpcSecurity
         ps.AddAccessRule(new PipeAccessRule(sidAdmins, PipeAccessRights.FullControl, AccessControlType.Allow));
         ps.AddAccessRule(new PipeAccessRule(sidUsers,
             PipeAccessRights.Read | PipeAccessRights.Write, AccessControlType.Allow));
+        // Creating additional instances of an existing pipe requires
+        // FILE_CREATE_PIPE_INSTANCE; without a CreatorOwner ACE the server
+        // loop dies with Access denied on its second iteration whenever the
+        // creating account is not SYSTEM/Admin (e.g. the session helper).
+        ps.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
+            PipeAccessRights.FullControl, AccessControlType.Allow));
         return ps;
     }
 
@@ -152,10 +159,14 @@ public sealed class IpcClient : IDisposable
 
 /// <summary>Sends one message and waits for the reply. Each request uses a
 /// fresh connection — IPC traffic is tiny and this keeps the server loop
-/// one-request-per-client, matching NamedPipeServerStream semantics.</summary>
+/// one-request-per-client, matching NamedPipeServerStream semantics.
+/// timeoutMs bounds the WHOLE exchange (connect + write + reply read): a
+/// reply wait with no deadline would wedge the client — and, on a sequential
+/// server, the server slot with it.</summary>
     public IpcMessage? RoundTrip(IpcMessage request, int timeoutMs = 5000)
     {
         Connect(timeoutMs);
+        using var cts = new CancellationTokenSource(Math.Max(timeoutMs, 1000));
         var json = JsonSerializer.Serialize(request);
         var bytes = System.Text.Encoding.UTF8.GetBytes(json);
         var len = BitConverter.GetBytes(bytes.Length);
@@ -164,20 +175,23 @@ public sealed class IpcClient : IDisposable
         _pipe.Flush();
 
         var lenBuf = new byte[4];
-        ReadExact(_pipe, lenBuf);
+        ReadExact(_pipe, lenBuf, cts.Token);
         var replyLen = BitConverter.ToInt32(lenBuf);
         if (replyLen <= 0 || replyLen > 1 << 20) throw new IOException("IPC reply framing error");
         var replyBuf = new byte[replyLen];
-        ReadExact(_pipe, replyBuf);
+        ReadExact(_pipe, replyBuf, cts.Token);
         return JsonSerializer.Deserialize<IpcMessage>(System.Text.Encoding.UTF8.GetString(replyBuf));
     }
 
-    private static void ReadExact(PipeStream pipe, byte[] buffer)
+    private static void ReadExact(PipeStream pipe, byte[] buffer, CancellationToken ct)
     {
+        // ReadAsync (not the sync overload) so the deadline really cancels a
+        // wedged reply wait — PipeStream honors the token on async reads only.
         var read = 0;
         while (read < buffer.Length)
         {
-            var n = pipe.Read(buffer, read, buffer.Length - read);
+            var n = pipe.ReadAsync(buffer.AsMemory(read, buffer.Length - read), ct)
+                        .AsTask().GetAwaiter().GetResult();
             if (n == 0) throw new IOException("IPC pipe closed");
             read += n;
         }

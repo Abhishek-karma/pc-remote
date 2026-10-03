@@ -64,7 +64,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private volatile bool _statusRefreshInFlight;
+
     private async Task RefreshStatusAsync()
+    {
+        // Reentrancy guard: the WinForms timer keeps ticking while a refresh
+        // is in flight; stacked Task.Run polls would pile up connections.
+        if (_statusRefreshInFlight) return;
+        _statusRefreshInFlight = true;
+        try
+        {
+            await RefreshStatusCoreAsync();
+        }
+        finally
+        {
+            _statusRefreshInFlight = false;
+        }
+    }
+
+    private async Task RefreshStatusCoreAsync()
     {
         var status = await ServiceIpc.GetStatusAsync();
         RunOnUi(() =>

@@ -49,26 +49,29 @@ public sealed class IpcServer : IAsyncDisposable
                 continue;
             }
 
+            // Wait for the client HERE (bounding live instances), then hand
+            // the connected instance to its own task so a wedged client — a
+            // hung reply read with no deadline took the tray IPC down once —
+            // never occupies the accept slot. Handlers are stateless, so
+            // concurrent instances are safe; each connection is one
+            // request/reply exchange.
+            await server.WaitForConnectionAsync(ct);
             var current = server;
-            try
+            _ = Task.Run(async () =>
             {
-                // Serve this instance, then loop and create the next one. Doing
-                // it this way (rather than spawning a task per instance in a
-                // tight loop) keeps the number of live pipe instances bounded
-                // by real concurrency instead of racing to
-                // MaxAllowedServerInstances and then spinning on failures.
-                await current.WaitForConnectionAsync(ct);
-                await HandleConnectionAsync(current, ct);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[!] IPC connection error: {ex.Message}");
-            }
-            finally
-            {
-                try { current.Dispose(); } catch { }
-            }
+                try
+                {
+                    await HandleConnectionAsync(current, ct);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[!] IPC connection error: {ex.Message}");
+                }
+                finally
+                {
+                    try { current.Dispose(); } catch { }
+                }
+            }, CancellationToken.None);
         }
     }
 

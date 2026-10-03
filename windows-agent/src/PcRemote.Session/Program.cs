@@ -295,6 +295,13 @@ internal sealed class SessionPipeServer
                 ps.AddAccessRule(new PipeAccessRule(
                     new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
                     PipeAccessRights.FullControl, AccessControlType.Allow));
+                // CreatorOwner: the helper itself (a user token) must be able
+                // to create the second and later pipe instances — without
+                // FILE_CREATE_PIPE_INSTANCE the accept loop fails after the
+                // very first connection.
+                ps.AddAccessRule(new PipeAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
+                    PipeAccessRights.FullControl, AccessControlType.Allow));
 
                 server = NamedPipeServerStreamAcl.Create(
                     _pipeName, PipeDirection.InOut,
