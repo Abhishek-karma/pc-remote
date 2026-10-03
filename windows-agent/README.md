@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🖥️ PC Remote — Windows Agent (0.2.0)
+# 🖥️ PC Remote — Windows Agent (0.2.1)
 
 **Service-based Windows remote-control host for Windows 10/11.**
 

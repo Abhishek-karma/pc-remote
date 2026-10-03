@@ -60,7 +60,7 @@ As of 0.2.0 the security boundary model changed:
   User processes never hold trust state.
 - **Local IPC, not local TCP**: the tray and session helpers communicate only
   over `\.\pipe\PCRemoteCtl`. Privileged IPC operations (revoke devices,
-  apply updates, drive secure input) require an elevated caller token; the
+  mint pairing codes, drive secure input) require an elevated caller token; the
   service verifies the client PID's token elevation before honoring them.
 - **Input privilege separation**: normal desktop input is injected by a
   per-session helper running as the logged-on user; UAC/lock/logon input is
@@ -74,9 +74,10 @@ As of 0.2.0 the security boundary model changed:
   power/SAS/session status) is accepted from the network, enforced at the
   service boundary and re-validated inside every helper. The service is not a
   remote shell.
-- **Update integrity**: updates are only executed after matching the
-  release-published SHA-256 digest and validating the Authenticode signature
-  chain (`WinVerifyTrust`). Unsigned or tampered artifacts are deleted.
+- **No self-update path**: the agent never downloads or executes an update
+  artifact. Upgrading means running the signed `PC-Remote-Setup.exe` yourself,
+  so there is no remote-artifact execution surface to harden. Release artifacts
+  ship with SHA-256 checksums for manual verification.
 - **Firewall least exposure**: rules are private/domain profile scoped to the
   local subnet only (never Public), created by the installer and repaired by
   the service.

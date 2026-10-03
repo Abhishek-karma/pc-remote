@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>PcRemote.Session</RootNamespace>
     <AssemblyName>PCRemoteSession</AssemblyName>
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <VersionPrefix>0.2.1</VersionPrefix>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
     <Product>PC Remote Session Helper</Product>

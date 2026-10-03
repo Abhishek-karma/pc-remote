@@ -1,4 +1,4 @@
-﻿package com.example.pcremote.ui
+package com.example.pcremote.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -375,9 +375,9 @@ fun SettingsScreen(
 
         val appVersionName = remember(context) {
             try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.8"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.2.1"
             } catch (_: Exception) {
-                "0.1.8"
+                "0.2.1"
             }
         }
 

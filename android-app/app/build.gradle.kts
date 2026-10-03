@@ -12,9 +12,9 @@ android {
         applicationId = "com.example.pcremote"
         minSdk = 26
         targetSdk = 35
-        // CI injects these from the Git tag (docs/15-DEPLOYMENT.md §3).
-        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 9
-        versionName = (project.findProperty("versionName") as String?) ?: "0.1.8"
+        // CI injects these from the git tag.
+        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 10
+        versionName = (project.findProperty("versionName") as String?) ?: "0.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
