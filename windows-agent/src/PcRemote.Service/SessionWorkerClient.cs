@@ -1,9 +1,8 @@
-// A running session-side input path. The service launches PCRemoteSession.exe
-// either with the console user's token (normal desktop input) or with a
-// duplicated SYSTEM token whose session id is set to the console session
-// (secure-input mode: the helper can then open WinSta0\Winlogon and inject
-// into the UAC / lock / logon desktops — the classic remote-desktop approach).
-// Input commands travel as JSON over the helper's own named pipe.
+// A running session-side input path. PCRemoteSession.exe is launched either
+// with the console user's token (normal desktop) or with a duplicated SYSTEM
+// token whose session id is the console session (secure mode — it can then open
+// WinSta0\Winlogon and inject into UAC / lock / logon). Commands travel as JSON
+// over the helper's own named pipe.
 
 using System.ComponentModel;
 using System.Diagnostics;
@@ -21,7 +20,23 @@ public sealed class SessionWorkerClient : ISessionInputPath
 
     public Process Proc { get; private set; }
 
-    public bool IsAlive => !Proc.HasExited;
+    public bool IsAlive
+    {
+        get
+        {
+            // Never throws: the router and the 500 ms healing pass poll this
+            // from several threads, and Process.HasExited raises on a disposed
+            // Process. An exception here would propagate out of
+            // SessionManager.RefreshState and kill the WTS STA thread for
+            // good — no lock/unlock detection for the rest of the boot.
+            if (_killed) return false;
+            try { return !Proc.HasExited; }
+            catch (ObjectDisposedException) { return false; }
+            catch (InvalidOperationException) { return false; }
+        }
+    }
+
+    private volatile bool _killed;
 
     private SessionWorkerClient(Process proc, int sessionId, bool secure)
     {
@@ -32,29 +47,20 @@ public sealed class SessionWorkerClient : ISessionInputPath
 
     public static SessionWorkerClient? LaunchAsUser(uint sessionId, bool secure)
     {
-        // Prefer the UIAccess helper (signed, Program Files, uiAccess=true) when
-        // the installer enabled it — it can reach elevated windows. Windows
-        // refuses to launch an *unsigned* UIAccess binary at all, and every
-        // unsigned/CI build would otherwise end up with NO input helper, so an
-        // actual launch failure retries with the plain helper.
-        if (!secure && UiAccessEnabled())
+        // One helper binary for both roles: the mode is a command-line switch
+        // (--secure-input), not a separate executable.
+        //
+        // There used to be a second, UIAccess-manifest copy of this helper for
+        // elevated windows. Windows refuses to launch an unsigned uiAccess
+        // binary at all, so it could never run in practice and only added a
+        // second build to sign and ship.
+        var path = Path.Combine(AppContext.BaseDirectory, "PCRemoteSession.exe");
+        if (!File.Exists(path))
         {
-            var uia = UiAccessHelperPath();
-            if (uia is not null)
-            {
-                var launched = TryLaunch(uia, secure, sessionId);
-                if (launched is not null) return launched;
-                Console.WriteLine("[!] UIAccess helper failed to launch (binary unsigned?); falling back to the plain helper");
-            }
-        }
-
-        var plain = Path.Combine(AppContext.BaseDirectory, "PCRemoteSession.exe");
-        if (!File.Exists(plain))
-        {
-            Console.WriteLine("[!] Session helper missing");
+            Console.WriteLine("[!] Session helper missing: " + path);
             return null;
         }
-        return TryLaunch(plain, secure, sessionId);
+        return TryLaunch(path, secure, sessionId);
     }
 
     /// <summary>Launches one helper executable. Returns null on failure (never
@@ -170,13 +176,14 @@ public sealed class SessionWorkerClient : ISessionInputPath
 
     public void Kill()
     {
+        _killed = true;
         try
         {
             if (!Proc.HasExited)
                 Proc.Kill(entireProcessTree: true);
-            Proc.Dispose();
         }
         catch { /* already gone */ }
+        finally { try { Proc.Dispose(); } catch { } }
     }
 
     // ------------------------------------------------------------------
@@ -200,8 +207,11 @@ public sealed class SessionWorkerClient : ISessionInputPath
     public Task<bool> TypeText(string text) =>
         SendInputCommandAsync("text_input", new RemoteMessage { Type = "text_input", Text = text });
 
-    public Task MediaControl(string action) =>
+    public Task<bool> MediaControl(string action) =>
         SendInputCommandAsync("media_control", new RemoteMessage { Type = "media_control", Action = action });
+
+    public Task<bool> ReleaseAll() =>
+        SendInputCommandAsync("release_all", new RemoteMessage { Type = "release_all" });
 
     private async Task<bool> SendInputCommandAsync(string command, RemoteMessage payload)
     {
@@ -235,27 +245,6 @@ public sealed class SessionWorkerClient : ISessionInputPath
         catch (Exception ex)
         {
             Console.WriteLine($"[!] Input relay to session {_sessionId} ({command}) failed after {sw.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
-            return false;
-        }
-    }
-
-    private static string? UiAccessHelperPath()
-    {
-        // Secure-input mode must be the SYSTEM-context plain helper; UIAccess
-        // buys nothing on the Winlogon desktop and the manifest forbids it.
-        var uia = Path.Combine(AppContext.BaseDirectory, "PCRemoteSession.UIA.exe");
-        return File.Exists(uia) ? uia : null;
-    }
-
-    private static bool UiAccessEnabled()
-    {
-        try
-        {
-            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\PCRemote");
-            return key?.GetValue("UseUIAccess") is 1;
-        }
-        catch
-        {
             return false;
         }
     }

@@ -14,7 +14,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Live E2E against a real agent on the LAN (11-TESTING-STRATEGY.md §5).
+ * Live E2E against a real agent on the LAN.
  * Not part of the normal connected suite — run it explicitly with the agent's
  * host and current pairing code:
  *

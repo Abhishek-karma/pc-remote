@@ -18,7 +18,7 @@ Environment checklist per run:
 | 2 | Service start | `sc stop` + `sc start` | WSS binds 58642, tray reconnects | ☐ | |
 | 3 | Service restart after crash | `taskkill /f /im PCRemoteService.exe` | SCM restarts within ~30 s (recovery config) | ☐ | |
 | 4 | Normal desktop | Connect from app, move/click/type in Notepad | Full control | ☐ | |
-| 5 | Elevated Task Manager | Launch Task Manager elevated; remote control | Input works into elevated window (UIAccess path) | ☐ | expected FAIL without signed UIA build — record |
+| 5 | Elevated Task Manager | Launch Task Manager elevated; remote control | **Out of scope:** input into elevated windows is not supported (UIPI; no UIAccess helper) | ☐ | dropped from matrix — record as a known limitation |
 | 6 | Registry Editor (elevated) | Same as #5 with regedit | Same | ☐ | |
 | 7 | Device Manager (elevated) | Same as #5 | Same | ☐ | |
 | 8 | UAC consent prompt | Trigger `regedit` elevation remotely | Mouse/keyboard work on secure desktop; state shows `secure_desktop` | ☐ | |

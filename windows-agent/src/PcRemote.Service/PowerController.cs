@@ -1,7 +1,5 @@
-// Privileged system power operations, executed by the service itself
-// (LocalSystem) rather than a user process, so lock/shutdown work from any
-// desktop state. Elevated semantics: shutdown/restart go through the OS
-// shutdown APIs with proper privilege, lock uses WTSLockSystem-equivalent.
+// Privileged power operations, run by the LocalSystem service so they work from
+// any desktop state.
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -13,35 +11,21 @@ public static class PowerController
     [DllImport("PowrProf.dll", SetLastError = true)]
     private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    private static extern bool WTSShutdownSystem(IntPtr serverHandle, uint shutdownFlag);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool LockWorkStation();
-
-    private const uint WTS_SHUTDOWN = 1;
-    private const uint WTS_REBOOT = 2;
-    private static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
-
     public static void Execute(string action)
     {
         switch (action)
         {
             case "sleep":
-                SetSuspendState(hibernate: false, forceCritical: false, disableWakeEvent: false);
+                SetSuspendState(hibernate: false, forceCritical: false, disableWakeEvent: true);
                 break;
             case "lock":
-                // Locking must affect the interactive session, so the service
-                // asks that session to lock via LockWorkStation in a helper —
-                // the session helper performs it; fall back to WTS disconnect.
-                ExecuteInConsoleSession("lock");
+                LockConsoleSession();
                 break;
             case "shutdown":
             case "restart":
-                // Use the standard shutdown.exe with SYSTEM privileges: honors
-                // pending edits warnings semantics and works pre-logon.
-                var flag = action == "restart" ? "/r /t 0" : "/s /t 0";
-                Process.Start(new ProcessStartInfo("shutdown", flag)
+                // shutdown.exe honours the "unsaved changes" prompt and works
+                // before anyone has logged on.
+                Process.Start(new ProcessStartInfo("shutdown", action == "restart" ? "/r /t 0" : "/s /t 0")
                 {
                     CreateNoWindow = true,
                     UseShellExecute = false
@@ -50,7 +34,9 @@ public static class PowerController
         }
     }
 
-    private static void ExecuteInConsoleSession(string action)
+    /// <summary>LockWorkStation only works from inside the interactive session,
+    /// so run a one-shot helper there with the console user's token.</summary>
+    private static void LockConsoleSession()
     {
         try
         {
@@ -62,7 +48,6 @@ public static class PowerController
                 return;
             }
 
-            // A quick one-shot helper invocation with the user token.
             if (!WTSQueryUserToken(sessionId, out var token))
             {
                 Console.WriteLine("[!] Cannot lock: no user token in console session");
@@ -70,7 +55,10 @@ public static class PowerController
             }
             using (token)
             {
-                var si = new SessionWorkerClient.NativeMethods.STARTUPINFOW { cb = System.Runtime.InteropServices.Marshal.SizeOf<SessionWorkerClient.NativeMethods.STARTUPINFOW>() };
+                var si = new SessionWorkerClient.NativeMethods.STARTUPINFOW
+                {
+                    cb = System.Runtime.InteropServices.Marshal.SizeOf<SessionWorkerClient.NativeMethods.STARTUPINFOW>()
+                };
                 SessionWorkerClient.NativeMethods.CreateProcessAsUser(
                     token.DangerousGetHandle(), null, $"\"{exePath}\" --lock",
                     IntPtr.Zero, IntPtr.Zero, false,

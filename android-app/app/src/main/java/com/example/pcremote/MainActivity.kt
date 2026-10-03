@@ -65,7 +65,7 @@ import com.example.pcremote.ui.components.uiState
 import com.example.pcremote.ui.theme.RemoteTheme
 import kotlinx.coroutines.launch
 
-/** The four control destinations (04-UI-UX-SPECIFICATION.md §2). */
+/** The four control destinations. */
 enum class AppScreen(val label: String) {
     Touchpad("Touchpad"),
     Keyboard("Keyboard"),
@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
 /**
  * Connected app shell: PC-name top bar with live status, connection banner,
  * active control screen, snackbar feedback, and an icon bottom nav
- * (04-UI-UX-SPECIFICATION.md §2, §7, §8).
+ *.
  */
 @Composable
 private fun ControlHub(

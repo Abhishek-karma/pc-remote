@@ -1,8 +1,8 @@
 # PC Remote — Windows Architecture
 
-Status: implemented through Phase 4 (service, IPC, session/privilege
-separation, UIAccess, secure desktop / lock-logon input). Phases 5–6 (screen
-streaming, Android remote-desktop UI) are specified here and not yet built.
+Status: service, IPC, session/privilege separation and secure desktop /
+lock-logon input. Screen streaming and the Android remote-desktop view are not
+built (see "Not implemented" at the end).
 
 ## Process model
 
@@ -14,36 +14,34 @@ streaming, Android remote-desktop UI) are specified here and not yet built.
 │  ├─ SessionManager (WTS notifications, desktop-state detection)         │
 │  ├─ InputRouter (allowlisted commands -> correct security boundary)     │
 │  ├─ SasController (sas.dll SendSAS for Ctrl+Alt+Del)                    │
-│  ├─ IpcServer \\.\pipe\PCRemoteCtl (tray + helpers; privilege-checked)  │
-│  └─ UpdateCoordinator (download -> SHA-256 -> Authenticode -> install)  │
+│  └─ IpcServer \\.\pipe\PCRemoteCtl (tray + helpers; privilege-checked)  │
 │                                                                         │
 │  launched per interactive session:                                      │
-│  ├─ PCRemoteSession.exe        (user token, session N)                  │
+│  ├─ PCRemoteSession.exe              (user token, session N)            │
 │  │    └─ normal-desktop input injection (SendInput)                     │
 │  └─ PCRemoteSession.exe --secure-input (SYSTEM token, session N)        │
 │       └─ Winlogon desktop input (UAC / lock / logon)                    │
 │                                                                         │
-│  optional, user session:                                                │
-│  └─ PCRemoteSession.UIA.exe    (user token, uiAccess=true manifest)     │
-│       └─ input into elevated windows (UIPI-exempt, signed, Program Files)│
-│                                                                         │
-│  PCRemoteTray.exe (user, session N) — UI client over IPC only           │
+│  PCRemoteTray.exe (user, session N) — status + pairing code over IPC    │
 └─────────────────────────────────────────────────────────────────────────┘
 
   Android app ◄── WSS :58642 (control, JSON v1) ──► PCRemoteService
-  (Phase 5 will add a dedicated media transport — frames never ride the JSON
-   control channel.)
 ```
 
 ## Privilege boundaries
 
 | Component | Token | Can | Never |
 |---|---|---|---|
-| PCRemoteService | LocalSystem, session 0 | network, auth, session mgmt, SAS, launch helpers, update | render UI, see user desktop |
+| PCRemoteService | LocalSystem, session 0 | network, auth, session mgmt, SAS, launch helpers | render UI, see user desktop |
 | PCRemoteSession | console user | inject into that session's normal desktop | network, persisted state |
 | PCRemoteSession --secure-input | SYSTEM in console session | open WinSta0\Winlogon, inject into UAC/lock/logon | network; inject into normal desktop (refused) |
-| PCRemoteSession.UIA | console user + UIAccess | inject into elevated windows | run unsigned (OS refuses) |
-| PCRemoteTray | console user | display status, request operations via IPC | own pairing/tokens, listen on network |
+| PCRemoteTray | console user | display status, revoke devices, open logs | own pairing/tokens, listen on network |
+
+**Elevated windows are not supported.** Windows' UIPI blocks input from a
+lower-integrity process, and the previous `uiAccess=true` helper could not run
+at all: Windows refuses to launch an unsigned UIAccess binary, so it only ever
+existed as a second build to sign and ship. It was removed rather than left as
+dead surface.
 
 ## Input routing (`InputRouter`)
 
@@ -59,6 +57,11 @@ Desktop state (`SessionManager.DetectState`, input-desktop name + WTS events):
 Commands are allowlisted twice: once in `CommandAllowlist` (service, network
 side) and once inside the session helper (defense in depth). Unknown types are
 rejected with `unknown_type`; the service is not a shell.
+
+The secure helper attaches to the Winlogon desktop with `SecureDesktop`
+(`OpenInputDesktop` + `SetThreadDesktop`). That call only succeeds with
+`DESKTOP_SWITCHDESKTOP` in the requested access mask — see `SecureDesktop.cs`
+for why that detail decides whether lock-screen input works at all.
 
 ## Lock-screen / UAC password entry (requirement 5)
 
@@ -84,17 +87,18 @@ rejected with `unknown_type`; the service is not a shell.
 
 `\\.\pipe\PCRemoteCtl`, ACL: SYSTEM/Administrators full, Users read/write.
 The service classifies each caller (PID via `GetNamedPipeClientProcessId`,
-then its token): `Elevated` (SYSTEM/admin) may revoke devices, apply updates
-and drive secure input; `Standard` (unelevated tray) may read status, refresh
-pairing codes and check for updates. There is no local TCP control surface.
+then its token): `Elevated` (SYSTEM/admin) may revoke devices, mint pairing
+codes and drive secure input; `Standard` (unelevated tray) may read status
+only — which is why the tray shows "(run as administrator)" instead of the
+pairing code. There is no local TCP control surface.
 
-## Updater (requirement 12)
+## Updates
 
-GitHub releases API (`api.github.com`) → download `PC-Remote-Setup.exe` →
-verify published SHA-256 sidecar → verify Authenticode via `WinVerifyTrust` →
-launch silently; the installer stops the service, replaces binaries and
-restarts it. Unverified artifacts are deleted, never executed. CI signs with
-signtool when `WINDOWS_CERT_PATH`/`WINDOWS_CERT_PASSWORD` are present and runs
+There is no in-app updater. Upgrades are a normal install: run the new
+`PC-Remote-Setup.exe` over the top — it stops the service, replaces the
+binaries, re-registers the service and starts it again. Release artifacts
+ship with SHA-256 checksums; CI signs the staged exes with signtool when
+`WINDOWS_CERT_PATH`/`WINDOWS_CERT_PASSWORD` are present and runs
 `installer/Validate-Release.ps1`.
 
 ## Installer (requirement 8)
@@ -105,14 +109,9 @@ recovery), private/domain-profile + localsubnet firewall rules, optional tray
 autostart, legacy self-install cleanup (HKCU Run entry + LocalAppData copy),
 full upgrade/uninstall.
 
-## Remaining phases (not yet implemented)
+## Not implemented
 
-* **Phase 5 — screen streaming:** dedicated media transport (raw TCP/UDP with
-  framed H.264 NALs, hardware Media Foundation encoder, adaptive bitrate; the
-  `stream_request` protocol message is already reserved/accepted). Frames must
-  never traverse the JSON control channel.
-* **Phase 6 — Android remote-desktop UI:** single connected screen with the
-  live remote display as the primary surface; touchpad/keyboard/CAD/fit
-  controls as floating overlays; decode with MediaCodec (hardware) fed by the
-  media channel.
-* **Phase 8 — Windows VM integration matrix:** see `TEST-MATRIX.md`.
+* **Screen streaming / remote-desktop view.** There is no media transport and
+  no reserved `stream_request` message: the phone sends input to a PC it
+  cannot see. Adding streaming is a protocol change, not a flag flip.
+* **Windows VM integration matrix:** see `TEST-MATRIX.md`.

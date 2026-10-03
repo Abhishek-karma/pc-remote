@@ -1,13 +1,37 @@
-# Deploys freshly published binaries from windows-agent\deploy\staging to the
-# installed location (C:\Program Files\PC Remote\) and restarts the service.
-# Run elevated (one UAC prompt). The phone disconnects for ~5 seconds during
-# the service restart and reconnects automatically.
+# Deploys freshly published binaries from windows-agent\installer\staging (the
+# folder ./installer/build.ps1 publishes to) to the installed location
+# (C:\Program Files\PC Remote\) and restarts the service.
+# Run elevated (one UAC prompt) - this script re-launches itself elevated if
+# needed. The phone disconnects for ~5 seconds during the service restart and
+# reconnects automatically.
 
 $ErrorActionPreference = "Stop"
-Start-Transcript -Path "D:\Remote\windows-agent\deploy\deploy.log" -Force
 
+# Self-elevate: stopping the service and writing to Program Files both need it.
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "Requesting elevation…"
+    Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`""
+    )
+    exit
+}
+
+Start-Transcript -Path (Join-Path $PSScriptRoot "deploy.log") -Force
+
+# installer/staging is where build.ps1 publishes; deploy/staging is kept as a
+# copy so this script keeps working from either location.
 $staging = Join-Path $PSScriptRoot "staging"
+if (-not (Test-Path (Join-Path $staging "PCRemoteService.exe"))) {
+    $staging = Join-Path (Split-Path -Parent $PSScriptRoot) "installer\staging"
+}
+if (-not (Test-Path (Join-Path $staging "PCRemoteService.exe"))) {
+    throw "No published binaries found. Run .\installer\build.ps1 (or publish to installer\staging) first."
+}
 $target  = "C:\Program Files\PC Remote"
+
+Write-Host "Staging: $staging"
 
 Write-Host "Stopping PCRemoteService…"
 Stop-Service PCRemoteService -Force -ErrorAction Stop

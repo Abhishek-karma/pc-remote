@@ -14,12 +14,6 @@ object Spacing {
     val xxxl = 32.dp
 }
 
-/** Touch-target floor (13-ACCESSIBILITY.md §3 hard requirement). */
-object TouchTarget {
-    val minimum = 48.dp
-    val control = 56.dp
-}
-
 /** Consistent corner language: controls small, containers medium, sheets large. */
 object Corners {
     val small = 8.dp

@@ -1,11 +1,16 @@
 // PC Remote Tray - UI client over service IPC.
 //
-// The tray owns no server, no pairing store and no input engine anymore
-// (requirement 1/11): it displays service status, asks the service for new
-// pairing codes, and offers update/unpair actions that the service executes
-// (with its own elevation checks). The tray's only persisted state is the
-// HKCU Run entry controlling ITS OWN autostart — the service itself is
-// managed by the SCM and starts with Windows regardless of the tray.
+// The tray owns no server, no pairing store and no input engine (requirement
+// 1/11): it displays service status, asks the service for new pairing codes,
+// and offers revoke/logs actions that the service executes (with its own
+// elevation checks). The tray's only persisted state is the HKCU Run entry
+// controlling ITS OWN autostart — the service itself is managed by the SCM and
+// starts with Windows regardless of the tray.
+//
+// The context menu IS the whole UI. An earlier WinForms panel duplicated every
+// field the menu already shows and was worse than useless: the service only
+// discloses the pairing code to an ELEVATED caller, so the unelevated tray's
+// pairing-code label was always empty.
 
 using System.Diagnostics;
 using System.IO;
@@ -16,7 +21,6 @@ namespace PcRemote.Tray;
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly NotifyIcon _tray = new();
-    private readonly AgentForm _mainForm;
     private readonly ToolStripMenuItem _codeItem = new("Pairing code: —") { Enabled = false };
     private readonly ToolStripMenuItem _devicesItem = new("No devices connected") { Enabled = false };
     private readonly ToolStripMenuItem _stateItem = new("Service state: —") { Enabled = false };
@@ -26,22 +30,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext(bool startMinimized = false)
     {
-        _mainForm = new AgentForm();
-        MainForm = _mainForm;
-
         var menu = new ContextMenuStrip();
         _ = menu.Handle; // Force HWND creation on UI thread for thread-safe BeginInvoke
-        menu.Items.Add(new ToolStripMenuItem("Open PC Remote", null, (_, _) => ShowGuiWindow()));
-        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_codeItem);
         menu.Items.Add("Copy pairing code", null, (_, _) => CopyText(ServiceIpc.GetStatus()?.PairingCode ?? ""));
         menu.Items.Add("New pairing code", null, async (_, _) => await ServiceIpc.GeneratePairingCodeAsync());
         menu.Items.Add(_devicesItem);
         menu.Items.Add(_stateItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Revoke all paired devices", null, (_, _) => RevokeAllDevices());
         menu.Items.Add(_startupItem);
         menu.Items.Add("Open logs folder", null, (_, _) => AgentLog.OpenLogsFolder());
-        menu.Items.Add("Check for updates...", null, async (_, _) => await CheckUpdatesAsync());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Exit());
 
@@ -49,7 +48,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Text = "PC Remote — checking service…";
         _tray.ContextMenuStrip = menu;
         _tray.Visible = true;
-        _tray.DoubleClick += (_, _) => ShowGuiWindow();
+        // Left/double click opens the menu: the menu is the entire UI, so there
+        // is no window to show.
+        _tray.MouseDoubleClick += (_, _) => menu.Show(Cursor.Position);
 
         _startupItem.CheckedChanged += (_, _) => StartupToggle.Set(_startupItem.Checked);
 
@@ -60,8 +61,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (!startMinimized)
         {
-            ShowGuiWindow();
+            // First run: show the menu with the pairing code in it, which is
+            // the one thing the user needs to read off this PC.
+            menu.Show(Cursor.Position);
         }
+    }
+
+    private void RevokeAllDevices()
+    {
+        var choice = MessageBox.Show(
+            "Remove every paired device? You will have to enter a new pairing code on each phone.",
+            "PC Remote", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (choice != DialogResult.Yes) return;
+
+        var ok = ServiceIpc.RevokeAllDevices();
+        MessageBox.Show(ok
+                ? "All paired devices have been revoked."
+                : "Could not revoke devices — open PC Remote as administrator.",
+            "PC Remote", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        _ = RefreshStatusAsync();
     }
 
     private volatile bool _statusRefreshInFlight;
@@ -93,7 +111,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _codeItem.Text = "Pairing code: —";
                 _devicesItem.Text = "No devices connected";
                 _stateItem.Text = "Service state: not running";
-                _mainForm.UpdateStatus(null);
                 return;
             }
 
@@ -111,40 +128,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 var n => $"{n} devices connected",
             };
             _stateItem.Text = $"Service state: {status.ServiceState} · PC state: {status.SessionState}";
-            _mainForm.UpdateStatus(status);
-        });
-    }
-
-    private async Task CheckUpdatesAsync()
-    {
-        var res = await ServiceIpc.CheckForUpdateAsync();
-        RunOnUi(() =>
-        {
-            if (res is null)
-            {
-                MessageBox.Show("The PC Remote service is not running.", "PC Remote",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            if (res.State == "update_available")
-            {
-                var choice = MessageBox.Show(
-                    $"A new version ({res.Version}) is available.\n\nDownload and install now? The service verifies the package signature before installing.",
-                    "Update Available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if (choice == DialogResult.Yes)
-                {
-                    var apply = ServiceIpc.ApplyUpdate();
-                    MessageBox.Show(apply == true
-                        ? "Update started. The service will install the verified package and restart."
-                        : "Update could not start (elevation or service required).",
-                        "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-            }
-            else
-            {
-                MessageBox.Show("You are running the latest version of PC Remote.", "PC Remote",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
         });
     }
 
@@ -152,16 +135,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (!string.IsNullOrEmpty(text))
             Clipboard.SetText(text);
-    }
-
-    private void ShowGuiWindow()
-    {
-        if (_mainForm.IsDisposed) return;
-        _mainForm.Show();
-        _mainForm.WindowState = FormWindowState.Normal;
-        _mainForm.BringToFront();
-        _mainForm.Activate();
-        _ = RefreshStatusAsync();
     }
 
     /// <summary>The exe's embedded brand icon, with a safe fallback.</summary>
@@ -230,33 +203,6 @@ internal static class ServiceIpc
                 var reply = client.RoundTrip(new IpcMessage { Type = "generate_pairing_code", Role = "tray" }, 2500);
                 return reply?.PairingCode;
             });
-        }
-        catch { return null; }
-    }
-
-    public sealed record UpdateCheck(string State, string Version);
-
-    public static Task<UpdateCheck?> CheckForUpdateAsync() => Task.Run(() =>
-    {
-        try
-        {
-            using var client = new IpcClient();
-            client.Connect(8000);
-            var reply = client.RoundTrip(new IpcMessage { Type = "update_check", Role = "tray" }, 10000);
-            if (reply is not { Ok: true }) return null;
-            return new UpdateCheck(reply.ServiceState ?? "up_to_date", reply.Version ?? "");
-        }
-        catch { return null; }
-    });
-
-    public static bool? ApplyUpdate()
-    {
-        try
-        {
-            using var client = new IpcClient();
-            client.Connect(3000);
-            var reply = client.RoundTrip(new IpcMessage { Type = "update_apply", Role = "tray" }, 5000);
-            return reply?.Ok;
         }
         catch { return null; }
     }

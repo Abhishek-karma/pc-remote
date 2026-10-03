@@ -1,15 +1,18 @@
-// InputManager (requirement 4): routes remote input to the correct Windows
-// security boundary instead of hoping one SendInput call fits all states.
+// Routes remote input to the correct Windows security boundary instead of
+// hoping one SendInput call fits all states.
 //
-//   Desktop state                    | Path
-//   ---------------------------------|--------------------------------------
-//   Normal desktop (unelevated fg)   | PCRemoteSession helper (user session)
-//   Elevated foreground window       | PCRemoteSession.UIA helper (UIAccess)
-//   UAC / Winlogon / locked          | Secure input helper (SYSTEM token in
-//                                    | the console session, Winlogon desktop)
+//   Desktop state           | Path
+//   ------------------------|--------------------------------------
+//   Normal desktop          | session helper (user token)
+//   UAC / Winlogon / locked | secure helper (SYSTEM token in the console
+//                           | session, Winlogon desktop)
 //
-// The router itself never injects input into its own (session 0) context —
-// that would target the wrong desktop and silently do nothing.
+// The router never injects into its own session-0 context — that would target
+// the wrong desktop and silently do nothing.
+//
+// Elevated foreground windows are NOT reachable: UIPI blocks lower-integrity
+// input and there is no UIAccess helper (an unsigned uiAccess binary cannot be
+// launched at all).
 
 using PcRemote.Core;
 
@@ -65,20 +68,32 @@ public sealed class InputRouter
     public Task<bool> TypeText(string text) =>
         ResolvePath().TypeText(text);
 
-    public Task MediaControl(string action)
+    public Task<bool> MediaControl(string action)
     {
         // Media keys only make sense for the interactive session.
         var session = _sessions.GetSessionWorker();
         if (session is { IsAlive: true }) return session.MediaControl(action);
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
-    /// <summary>Loose ends: if a remote click died mid-press, releasing stale
-    /// buttons prevents a stuck mouse. Delegated to whichever helpers exist.</summary>
-    public static void ReleaseAllButtons()
+    /// <summary>A client can drop mid-drag (WiFi loss, app killed), leaving a
+    /// mouse button physically held down. Releasing is best-effort: tell
+    /// whichever helper is alive to drop everything it is holding.</summary>
+    public async Task ReleaseAllButtons()
     {
-        // Handled inside the helpers themselves when their IPC connection
-        // drops (see PcRemote.Session.ConnectionHandler). Nothing to do here.
+        var session = _sessions.GetSessionWorker();
+        if (session is { IsAlive: true })
+        {
+            try { await session.ReleaseAll(); }
+            catch (Exception ex) { Console.WriteLine($"[!] Release-on-disconnect failed: {ex.Message}"); }
+        }
+
+        var secure = _sessions.GetSecureInputHelper();
+        if (secure is { IsAlive: true })
+        {
+            try { await secure.ReleaseAll(); }
+            catch (Exception ex) { Console.WriteLine($"[!] Release-on-disconnect failed (secure): {ex.Message}"); }
+        }
     }
 }
 
@@ -92,5 +107,9 @@ public interface ISessionInputPath
     Task<bool> Scroll(int amount);
     Task<bool> SendKey(string key, List<string> modifiers);
     Task<bool> TypeText(string text);
-    Task MediaControl(string action);
+    Task<bool> MediaControl(string action);
+
+    /// <summary>Release every held mouse button/modifier. Used when a client
+    /// disconnects mid-drag so the PC is never left with a stuck button.</summary>
+    Task<bool> ReleaseAll();
 }

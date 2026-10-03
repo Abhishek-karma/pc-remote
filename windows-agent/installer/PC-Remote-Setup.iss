@@ -1,7 +1,7 @@
 ; PC-Remote-Setup.iss — Inno Setup installer for PC Remote (requirement 8).
 ;
 ; UX contract: "Run once to install, then always available."
-;   * Installs to C:\Program Files\PC Remote\  (protected path, UIAccess-safe)
+;   * Installs to C:\Program Files\PC Remote\  (protected path)
 ;   * Registers PCRemoteService with the SCM: automatic start, recovery restart
 ;   * Creates least-exposure firewall rules (private/domain profiles, LAN subnet)
 ;   * Optional tray autostart (HKCU Run — cosmetic only; the service does not
@@ -38,7 +38,7 @@ SolidCompression=yes
 WizardStyle=modern
 ; Architectures
 ArchitecturesInstallIn64BitMode=x64compatible
-; Do not let users install into an unprotected path (UIAccess requirement).
+; Do not let users install into an unprotected path.
 ; DisableDirPage is the documented directive for this - "DefaultDirNameFixed"
 ; is not an Inno Setup directive and was silently ineffective.
 DisableDirPage=yes
@@ -76,9 +76,6 @@ Name: "{autodesktop}\PC Remote"; Filename: "{app}\{#MyAppExeName}"; Tasks: deskt
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
     ValueName: "PC Remote Tray"; ValueData: """{app}\{#MyAppExeName}"" --minimized"; \
     Tasks: trayautostart; Flags: uninsdeletevalue
-; UIAccess helper enabled — PCRemoteSession.UIA.exe is signed and in Program Files.
-Root: HKLM; Subkey: "Software\PCRemote"; ValueType: dword; ValueName: "UseUIAccess"; \
-    ValueData: "1"; Flags: uninsdeletekey
 
 [Run]
 ; Delete first: on an upgrade the service already exists and "sc create" fails
@@ -110,7 +107,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PC Remote mDNS (LAN, private)"""; Flags: runhidden; RunOnceId: "DelFwUdp"
 
 [UninstallDelete]
-; Stage directory for verified updates
+; Legacy self-installer data (the in-app updater was removed; updates are
+; applied by running the new installer over the top).
 Type: filesandordirs; Name: "{commonappdata}\PCRemote\update"
 
 [Code]

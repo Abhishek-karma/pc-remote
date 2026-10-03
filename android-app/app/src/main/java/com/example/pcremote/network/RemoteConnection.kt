@@ -54,49 +54,23 @@ data class RemoteMessage(
 )
 
 /**
- * Persists a per-host SHA-256 fingerprint of the agent's self-signed server
- * certificate, captured on the first successful handshake (trust-on-first-use,
- * docs/09-SECURITY-PRIVACY.md §2). Later connections to the same host must
- * present the same certificate — a mismatch (e.g. a different agent after a
- * DHCP renumber) fails the TLS handshake instead of silently trusting it.
- *
- * Pins are stored under both IP and pcName keys so DHCP lease changes
- * don't force re-pairing when the machine name is known.
+ * Per-host SHA-256 fingerprint of the agent's self-signed certificate, captured
+ * on the first handshake (trust-on-first-use) and never rewritten afterwards.
+ * Backed by EncryptedSharedPreferences.
  */
 class PinStore(private val prefs: SharedPreferences) {
-    fun getPin(host: String): String? =
-        prefs.getString("certpin_$host", null)
+    fun getPin(host: String): String? = prefs.getString("certpin_$host", null)
 
-    /** Look up pin by pcName fallback when IP-based pin is missing. */
-    fun getPinByName(pcName: String): String? =
-        prefs.getString("certpin_name_$pcName", null)
-
-    /** Records the first-seen pin only; later connections can never rewrite it. */
-    fun recordPin(host: String, fingerprint: String, pcName: String? = null) {
-        val edit = prefs.edit()
+    fun recordPin(host: String, fingerprint: String) {
         if (prefs.getString("certpin_$host", null) == null) {
-            edit.putString("certpin_$host", fingerprint)
+            prefs.edit().putString("certpin_$host", fingerprint).apply()
         }
-        if (pcName != null && prefs.getString("certpin_name_$pcName", null) == null) {
-            edit.putString("certpin_name_$pcName", fingerprint)
-        }
-        edit.apply()
     }
 
-    /**
-     * Removes the pin so the host can be re-paired trust-on-first-use (e.g.
-     * after the agent was reinstalled and generated a new certificate).
-     * Only ever called from explicit user action ("Forget").
-     */
+    /** Forget a host so it can be paired again (e.g. the agent was reinstalled
+     * and generated a new certificate). */
     fun clearPin(host: String) {
         prefs.edit().remove("certpin_$host").apply()
-    }
-
-    /** Migrate an IP-based pin entry to cover a new IP (DHCP change). */
-    fun aliasPin(newHost: String, fingerprint: String) {
-        if (prefs.getString("certpin_$newHost", null) == null) {
-            prefs.edit().putString("certpin_$newHost", fingerprint).apply()
-        }
     }
 }
 
@@ -108,7 +82,7 @@ class PinStore(private val prefs: SharedPreferences) {
  * Security: WSS only, with TOFU server-certificate pinning per host. When a
  * previously-connected host drops, the connection re-authenticates itself
  * with the saved token using exponential backoff (RECONNECTING), so a Wi-Fi
- * hiccup heals without user action (docs/10-ERROR-HANDLING.md §5).
+ * hiccup heals without user action.
  */
 class RemoteConnection(
     private val tokenStore: TokenStore,
@@ -161,7 +135,7 @@ class RemoteConnection(
     val lastAuthFailed: Boolean get() = authFailed
 
     // True after the agent announced an expected close (user-initiated
-    // shutdown/restart — 10-ERROR-HANDLING.md §3): suppresses the reconnect
+    // shutdown/restart: suppresses the reconnect
     // banner and any auto-reconnect attempts.
     private var expectedDisconnect = false
 
@@ -229,10 +203,10 @@ class RemoteConnection(
                     "auth_ok" -> {
                         val pcName = msg.pcName
                         activeTrustManagers[host]?.pendingFingerprint?.let { fingerprint ->
-                            pinStore.recordPin(host, fingerprint, pcName)
+                            pinStore.recordPin(host, fingerprint)
                         }
                         activeTrustManagers[host]?.clearPending()
-                        msg.token?.let { tokenStore.saveToken(host, it, pcName) }
+                        msg.token?.let { tokenStore.saveToken(host, it) }
                         pcName?.let { onPcName?.invoke(host, it) }
                         currentConnKey = msg.connKey
                         authFailed = false
@@ -405,22 +379,12 @@ internal class PinningTrustManager(private val pinStore: PinStore, private val h
 private fun X509Certificate.sha256Fingerprint(): String =
     MessageDigest.getInstance("SHA-256").digest(encoded).joinToString("") { "%02x".format(it) }
 
-/**
- * Persists per-host trust tokens so returning to a previously-paired PC
- * doesn't require re-entering the pairing code. Backed by
- * EncryptedSharedPreferences (09-SECURITY-PRIVACY.md §4).
- */
+/** Per-host trust tokens, so returning to a paired PC skips the pairing code. */
 class TokenStore(private val prefs: android.content.SharedPreferences) {
     fun getToken(host: String): String? = prefs.getString("token_$host", null)
 
-    /** Look up token by pcName fallback when IP-based token is missing. */
-    fun getTokenByName(pcName: String): String? = prefs.getString("token_name_$pcName", null)
-
-    fun saveToken(host: String, token: String, pcName: String? = null) {
-        val edit = prefs.edit()
-        edit.putString("token_$host", token)
-        if (pcName != null) edit.putString("token_name_$pcName", token)
-        edit.apply()
+    fun saveToken(host: String, token: String) {
+        prefs.edit().putString("token_$host", token).apply()
     }
 
     /** Removes a saved token locally ("Forget this PC" in Settings). */
@@ -437,7 +401,7 @@ class TokenStore(private val prefs: android.content.SharedPreferences) {
 
 /**
  * App settings persisted in SharedPreferences: touchpad sensitivity
- * (02-FEATURE-SPECIFICATION.md F2.6/F9.2) and optional per-PC display names
+ * and optional per-PC display names
  * (F9.1). Exposed as flows so screens pick changes up live.
  */
 class SettingsStore(private val prefs: android.content.SharedPreferences) {
@@ -484,7 +448,7 @@ class SettingsStore(private val prefs: android.content.SharedPreferences) {
     fun removeName(host: String) = prefs.edit().remove(NAME_PREFIX + host).apply()
 }
 
-/** Creates the app's encrypted SharedPreferences with automatic KeyStore recovery (09-SECURITY-PRIVACY.md §4). */
+/** Creates the app's encrypted SharedPreferences with automatic KeyStore recovery. */
 object EncryptedPrefs {
     fun create(context: android.content.Context): android.content.SharedPreferences {
         return try {

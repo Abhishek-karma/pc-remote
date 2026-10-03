@@ -1,6 +1,6 @@
 // Persistent pairing code and DPAPI-encrypted token authentication store.
 //
-// Storage ownership: the Windows service owns this store (requirement 11).
+// Storage ownership: the Windows service owns this store.
 // The tray and session helpers never touch the token file directly — they go
 // through authenticated local IPC. Under the service the data protection
 // scope is LocalMachine (stored under ProgramData with an ACL restricted to

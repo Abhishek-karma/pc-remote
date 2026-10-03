@@ -1,4 +1,4 @@
-package com.example.pcremote.ui
+﻿package com.example.pcremote.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -7,10 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -21,8 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.outlined.Computer
@@ -51,9 +47,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -175,7 +169,7 @@ fun SettingsScreen(
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                                 )
                                 Text(
-                                    text = "$host • ${if (isCurrent) "Active Session" else "Saved"}",
+                                    text = "$host â€¢ ${if (isCurrent) "Active Session" else "Saved"}",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 11.sp
@@ -378,9 +372,6 @@ fun SettingsScreen(
 
         // --- SECTION 4: ABOUT ---
         val context = LocalContext.current
-        val scope = rememberCoroutineScope()
-        var checkingUpdate by remember { mutableStateOf(false) }
-        var updateResult by remember { mutableStateOf<com.example.pcremote.network.AndroidUpdateResult?>(null) }
 
         val appVersionName = remember(context) {
             try {
@@ -405,77 +396,6 @@ fun SettingsScreen(
                     text = "v$appVersionName",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                 )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Check for Updates",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (checkingUpdate) {
-                    androidx.compose.material3.CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    TextButton(
-                        onClick = {
-                            scope.launch {
-                                checkingUpdate = true
-                                updateResult = com.example.pcremote.network.UpdateChecker.checkForUpdate(appVersionName)
-                                checkingUpdate = false
-                            }
-                        }
-                    ) {
-                        Text("Check Now")
-                    }
-                }
-            }
-
-            updateResult?.let { res ->
-                if (res.hasUpdate) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Update Available: ${res.latestVersion}",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Text(
-                                    text = "Download latest APK release",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                                )
-                            }
-                            Button(
-                                onClick = { com.example.pcremote.network.UpdateChecker.openUpdateUrl(context, res.apkUrl) },
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("Download")
-                            }
-                        }
-                    }
-                } else {
-                    Text(
-                        text = "You are on the latest version.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),

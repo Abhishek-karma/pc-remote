@@ -10,7 +10,7 @@ import android.os.Looper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** A PC found on the LAN via mDNS ("_pc-remote._tcp" — see 07-API-SPECIFICATION.md §7). */
+/** A PC found on the LAN via mDNS ("_pc-remote._tcp". */
 data class DiscoveredPc(
     val serviceName: String,
     val displayName: String,
@@ -49,7 +49,7 @@ interface MulticastGate {
 /**
  * Browses the LAN for PCs running the Windows agent. Wraps NsdManager behind
  * [NsdGateway] so the logic is unit-testable with fakes (see
- * 11-TESTING-STRATEGY.md). Holds a MulticastLock while browsing
+ * Holds a MulticastLock while browsing
  * (CHANGE_WIFI_MULTICAST_STATE, a normal auto-granted permission) so multicast
  * replies are received. Scoped to the caller's lifecycle: discovery runs only
  * while [start] is current; the pairing screen starts it on entry and stops it

@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed (simplification pass)
+The app is now the smallest thing that does the job. Removed machinery that was
+never used, never requested, or could never run:
+
+- **In-app updater (Windows):** `UpdateCoordinator`, the semver `UpdateVersion`
+  parser, `AuthenticodeVerifier` (`WinVerifyTrust`), the `update_check` /
+  `update_apply` IPC pair and the tray's update dialogs. Update by running the
+  new `PC-Remote-Setup.exe` over the old install.
+- **In-app updater (Android):** `UpdateChecker.kt` and its Settings UI.
+- **UIAccess helper (`PcRemote.Session.UIA`):** Windows refuses to *launch* an
+  unsigned `uiAccess` binary, so this second copy of the injector could never
+  run — it was only a fourth binary to build, sign and ship. Removed from the
+  solution, installer, build script and release workflow. **Consequence:**
+  elevated windows are not reachable, which was already true in practice.
+- **Tray GUI window (`AgentForm.cs`, 316 lines):** it duplicated every field the
+  tray menu already shows, and its pairing-code label was always empty because
+  the service only discloses the code to elevated callers. The context menu is
+  now the whole UI; "Revoke all paired devices" moved into it so nothing was lost.
+- **Reserved screen-streaming protocol:** `StreamOffer`, the `stream` message
+  field and the `stream_request` command that only ever answered `not_ready`.
+- **Dead code:** unused `IpcMessage.Command`/`Version` fields, the no-op
+  `InputRouter.ReleaseAllButtons()`, a duplicate of the secure-desktop attach.
+
+### Fixed
+- **Lock screen / UAC / logon input did nothing at all.** The secure helper
+  opened the input desktop with `DESKTOP_READOBJECTS` only; `SetThreadDesktop`
+  rejects a handle without `DESKTOP_SWITCHDESKTOP` (ERROR_ACCESS_DENIED), so
+  every relayed command was refused and the phone saw `input_unavailable`.
+  Desktop access now lives in one place (`PcRemote.Core/Session/SecureDesktop`)
+  with the correct access mask, a process-lifetime desktop handle (the old code
+  leaked one handle per relayed `mouse_move`) and real Win32 error logging.
+- **Secure helper was never restarted.** `_secureHelper ??=` only replaced a
+  null reference, so once the helper died — or was never started because no user
+  was logged on yet — lock-screen input stayed dead until the service restarted.
+  It is now re-launched on liveness, every state, on the 500 ms tick.
+- **Session id mismatch on the logon screen.** The helper derived its IPC pipe
+  name from `WTSGetActiveConsoleSessionId`, which returns `0xFFFFFFFF` when
+  nobody is attached, so service and helper disagreed on the pipe name and every
+  relay timed out. The helper now uses its own session id (`ProcessIdToSessionId`)
+  and the service falls back to the active/physical console session.
+- **`IsAlive` could kill session detection.** `Process.HasExited` throws on a
+  disposed process; that exception escaped `RefreshState` and terminated the WTS
+  STA thread, ending lock/unlock detection for the rest of the boot.
+- **Release-on-disconnect was a silent no-op.** `InputRouter.ReleaseAllButtons()`
+  did nothing, so a client dropping mid-drag could leave a mouse button held
+  down. It now relays a real `release_all` command to whichever helper is alive.
+
+### Changed
+- `deploy\deploy-update.ps1` no longer hardcodes a `D:\Remote\...` transcript
+  path and self-elevates instead of failing unelevated.
+
+---
+
 ## [0.2.0] - 2026-10-02
 
 ### Architecture (breaking, Windows agent)

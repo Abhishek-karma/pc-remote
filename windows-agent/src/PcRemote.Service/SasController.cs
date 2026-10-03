@@ -1,4 +1,4 @@
-// SasController — secure attention sequence (requirement 4).
+// SasController — secure attention sequence.
 // Ctrl+Alt+Del is NOT an ordinary keyboard combination: only the OS can
 // raise it. The documented API for software SAS generation is SendSAS
 // (sas.dll), callable from a SYSTEM service — exactly this process.

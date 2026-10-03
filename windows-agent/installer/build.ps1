@@ -2,9 +2,8 @@
 #  1. Publishes all components into installer/staging (framework-dependent,
 #     win-x64). Switch to --self-contained true for runtime-free installs.
 #  2. Signs staged executables when WINDOWS_CERT_PATH / WINDOWS_CERT_PASSWORD
-#     are set (requirement 13) — the UIAccess helper MUST be signed to work.
-#  3. Produces the SHA-256 sidecar consumed by the service updater
-#     (PC-Remote-Setup.exe.sha256 alongside the artifact in the release).
+#     are set (requirement 13).
+#  3. Produces the SHA-256 sidecar listed in the release checksums.
 #  4. Runs ISCC (Inno Setup) to produce dist/PC-Remote-Setup.exe.
 
 param(
@@ -20,7 +19,6 @@ $staging = Join-Path $PSScriptRoot "staging"
 $projects = @(
     "src/PcRemote.Service/PcRemote.Service.csproj",
     "src/PcRemote.Session/PcRemote.Session.csproj",
-    "src/PcRemote.Session.UIA/PcRemote.Session.UIA.csproj",
     "src/PcRemote.Tray/PcRemote.Tray.csproj"
 )
 
@@ -47,7 +45,7 @@ if ($env:WINDOWS_CERT_PATH -and $env:WINDOWS_CERT_PASSWORD) {
         if ($LASTEXITCODE -ne 0) { throw "signing failed: $($_.Name)" }
     }
 } else {
-    Write-Warning "No signing certificate configured (WINDOWS_CERT_PATH not set); output is unsigned. UIAccess helper will not activate; development only."
+    Write-Warning "No signing certificate configured (WINDOWS_CERT_PATH not set); output is unsigned; development only."
 }
 
 # --- SHA-256 sidecar for the updater (requirement 12) ---

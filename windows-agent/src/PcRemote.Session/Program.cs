@@ -1,20 +1,12 @@
-// PC Remote Session Helper.
-//
-// One process, three modes (requirement 2/4):
-//   * default: runs in the interactive user session, hosts the input pipe and
-//     injects input into the normal desktop. Launched by the service with the
-//     console user's token.
-//   * --secure-input: runs as SYSTEM inside the console session and injects
-//     into the Winlogon desktop (UAC consent, credential prompt, lock screen,
-//     logon UI). Switches the worker thread to the secure desktop when it
-//     becomes the active input desktop.
-//   * --lock: one-shot lock request from the service (LockWorkStation must run
-//     inside the interactive session).
+// PC Remote Session Helper. One process, two modes:
+//   * default:        user token, injects into the session's normal desktop.
+//   * --secure-input: SYSTEM token in the console session, injects into the
+//                     Winlogon desktop (UAC, credential prompt, lock, logon).
+//   * --lock:         one-shot LockWorkStation request from the service.
 //
 // This process NEVER talks to the network and NEVER persists anything. It
-// re-validates every relayed command against the same allowlist the service
-// uses (defense in depth). Keystrokes are executed and immediately discarded:
-// nothing is logged, buffered or echoed (requirement 5).
+// re-validates every relayed command against its own allowlist, and keystrokes
+// are executed then discarded — never logged or buffered.
 
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -37,16 +29,17 @@ internal static class Program
         var secure = args.Contains("--secure-input");
         AgentLog.Init(Path.Combine(PairingStore.ServiceDataDir, "logs"));
 
-        var sessionId = secure ? GetOwnSessionId() : (int)GetActiveConsoleSessionId();
+        // Both modes derive the pipe name from this process's REAL session id:
+        // it must match the id the service launched us with, and WTS cannot be
+        // trusted to report it back the same way once the console session has
+        // no user attached (0xFFFFFFFF at the logon screen).
+        var sessionId = GetOwnSessionId();
         // Shared with the service (IpcEndpoints.SessionPipe) so the normal and
         // secure helpers can never be confused for one another.
         var pipeName = IpcEndpoints.SessionPipe(sessionId, secure);
 
         Console.WriteLine($"[session] helper starting (secure={secure}, session={sessionId}, pipe={pipeName})");
 
-        // Secure mode: attach the pipe-handler threads to the Winlogon desktop
-        // the moment it becomes the active input desktop. Normal mode injects
-        // on the default desktop of this process's own session.
         var injector = new DesktopInjector(secure);
 
         using var cts = new CancellationTokenSource();
@@ -57,16 +50,15 @@ internal static class Program
 
         if (secure)
         {
-            // The service sits in session 0 and cannot observe which desktop
-            // receives input; this helper lives in the console session and
-            // reports Winlogon transitions (UAC/lock/logon) back to it.
+            // We live in the console session, so we can report Winlogon
+            // transitions (UAC/lock/logon) back to the service in session 0.
             // Reports carry only the desktop name — never keystrokes.
             var reporter = Task.Run(async () =>
             {
                 string? lastReported = null;
                 while (!cts.IsCancellationRequested)
                 {
-                    var name = QueryActiveInputDesktopName();
+                    var name = SecureDesktop.GetActiveInputDesktopName();
                     if (name != lastReported)
                     {
                         lastReported = name;
@@ -97,47 +89,14 @@ internal static class Program
         return 0;
     }
 
-    private static uint GetActiveConsoleSessionId() => Kernel32.WTSGetActiveConsoleSessionIdSafe();
-
-    /// <summary>Name of the desktop currently receiving input in this session.</summary>
-    internal static string? QueryActiveInputDesktopName()
-    {
-        const uint DESKTOP_READOBJECTS = 0x0001;
-        const uint UOI_NAME = 2;
-        var h = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
-        if (h == IntPtr.Zero) return null;
-        try
-        {
-            var sb = new System.Text.StringBuilder(256);
-            if (!GetUserObjectInformation(h, UOI_NAME, sb, (uint)sb.Capacity, out _)) return null;
-            return sb.ToString();
-        }
-        finally
-        {
-            CloseDesktop(h);
-        }
-    }
-
     private static int GetOwnSessionId()
     {
-        // The helper always runs inside the console session (the service
-        // launches it there), so the active console id is its own session.
-        var id = Kernel32.WTSGetActiveConsoleSessionIdSafe();
+        var id = Kernel32.ProcessIdToSessionIdSafe();
         return id == 0 ? 1 : (int)id;
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool LockWorkStation();
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    internal static extern bool CloseDesktop(IntPtr desktop);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-    internal static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    internal static extern bool GetUserObjectInformation(IntPtr hObj, uint index,
-        System.Text.StringBuilder info, uint nMax, out uint length);
 }
 
 internal static class Kernel32
@@ -145,15 +104,17 @@ internal static class Kernel32
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern uint WTSGetActiveConsoleSessionId();
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
+
     public static uint WTSGetActiveConsoleSessionIdSafe() => WTSGetActiveConsoleSessionId();
+
+    public static uint ProcessIdToSessionIdSafe() =>
+        ProcessIdToSessionId((uint)System.Diagnostics.Process.GetCurrentProcess().Id, out var id) ? id : 0u;
 }
 
 /// <summary>
-/// Executes allowlisted input commands on the correct desktop. In secure mode
-/// every execution attempts to attach the calling thread to the Winlogon
-/// desktop first (UAC/lock/logon); if the active desktop is the normal one the
-/// command is refused so a SYSTEM helper never injects into the user session
-/// behind the user's back.
+/// Executes allowlisted input commands on the correct desktop.
 /// </summary>
 internal sealed class DesktopInjector
 {
@@ -161,106 +122,62 @@ internal sealed class DesktopInjector
 
     public DesktopInjector(bool secure) => _secure = secure;
 
-    /// <summary>Must only ever return true for the allowlisted types below.</summary>
+    /// <summary>Deliberately narrower than the service-side allowlist: power/SAS
+    /// must never be relayed into a user session.</summary>
     private static readonly HashSet<string> Allowed = new(StringComparer.Ordinal)
     {
         "mouse_move", "mouse_click", "mouse_scroll", "key_press", "text_input", "media_control",
+        "release_all",
     };
 
     public bool Execute(string type, RemoteMessage msg)
     {
         if (!Allowed.Contains(type)) return false;
 
-        bool ran = false;
-        IntPtr attachedDesktop = IntPtr.Zero;
         if (_secure)
         {
-            // Attach this thread to the active input desktop if that is
-            // Winlogon; refuse to act otherwise (a SYSTEM helper must never
+            // Attach this thread to the Winlogon desktop if that is the active
+            // input desktop; refuse to act otherwise (a SYSTEM helper must never
             // inject into the user session behind the user's back).
-            attachedDesktop = TryAttachToActiveDesktop();
-            if (attachedDesktop == IntPtr.Zero) return false;
+            if (SecureDesktop.AttachCurrentThreadToSecureInputDesktop() is null) return false;
         }
 
-        try
+        switch (type)
         {
-            switch (type)
-            {
-                case "mouse_move":
-                    ran = InputInjector.MoveMouseRelative(
-                        Math.Clamp(msg.Dx ?? 0, -4096, 4096),
-                        Math.Clamp(msg.Dy ?? 0, -4096, 4096));
-                    break;
-                case "mouse_click":
-                    var btn = (msg.Button ?? "left").ToLowerInvariant();
-                    var act = (msg.Action ?? "click").ToLowerInvariant();
-                    if (btn is not ("left" or "right" or "middle") || act is not ("click" or "down" or "up"))
-                        return false;
-                    ran = InputInjector.MouseClick(btn, act);
-                    break;
-                case "mouse_scroll":
-                    ran = InputInjector.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200));
-                    break;
-                case "key_press":
-                    if (string.IsNullOrEmpty(msg.Key)) return false;
-                    ran = InputInjector.SendKey(msg.Key, msg.Modifiers ?? []);
-                    break;
-                case "text_input":
-                    var text = msg.Text ?? "";
-                    if (text.Length > 1000) text = text[..1000];
-                    ran = InputInjector.TypeText(text);
-                    break;
-                case "media_control":
-                    var mediaAct = (msg.Action ?? "").ToLowerInvariant();
-                    if (mediaAct is not ("play_pause" or "next" or "prev" or "vol_up" or "vol_down" or "mute"))
-                        return false;
-                    ran = InputInjector.MediaControl(mediaAct);
-                    break;
-            }
+            case "mouse_move":
+                return InputInjector.MoveMouseRelative(
+                    Math.Clamp(msg.Dx ?? 0, -4096, 4096),
+                    Math.Clamp(msg.Dy ?? 0, -4096, 4096));
+            case "mouse_click":
+                var btn = (msg.Button ?? "left").ToLowerInvariant();
+                var act = (msg.Action ?? "click").ToLowerInvariant();
+                if (btn is not ("left" or "right" or "middle") || act is not ("click" or "down" or "up"))
+                    return false;
+                return InputInjector.MouseClick(btn, act);
+            case "mouse_scroll":
+                return InputInjector.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200));
+            case "key_press":
+                if (string.IsNullOrEmpty(msg.Key)) return false;
+                return InputInjector.SendKey(msg.Key, msg.Modifiers ?? []);
+            case "text_input":
+                var text = msg.Text ?? "";
+                if (text.Length > 1000) text = text[..1000];
+                // Executed and discarded: nothing about the typed text is
+                // buffered, logged or returned anywhere.
+                return InputInjector.TypeText(text);
+            case "media_control":
+                var mediaAct = (msg.Action ?? "").ToLowerInvariant();
+                if (mediaAct is not ("play_pause" or "next" or "prev" or "vol_up" or "vol_down" or "mute"))
+                    return false;
+                return InputInjector.MediaControl(mediaAct);
+            case "release_all":
+                // Sent by the service when a client drops mid-drag so the PC is
+                // never left with a mouse button held down.
+                InputInjector.ReleaseAllButtons();
+                return true;
+            default:
+                return false;
         }
-        finally
-        {
-            // The thread-desktop association persists, but the handle must be
-            // released; keystroke text was executed and is never retained.
-            if (attachedDesktop != IntPtr.Zero) CloseDesktop(attachedDesktop);
-            GC.KeepAlive(ran);
-        }
-        return ran;
-    }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-    private static extern bool SetThreadDesktop(IntPtr desktop);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool CloseDesktop(IntPtr desktop);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern bool GetUserObjectInformation(IntPtr hObj, uint index,
-        System.Text.StringBuilder info, uint nMax, out uint length);
-
-    private static IntPtr TryAttachToActiveDesktop()
-    {
-        const uint DESKTOP_READOBJECTS = 0x0001;
-        const uint UOI_NAME = 2;
-        var h = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
-        if (h == IntPtr.Zero) return IntPtr.Zero;
-
-        var sb = new System.Text.StringBuilder(256);
-        if (!GetUserObjectInformation(h, UOI_NAME, sb, (uint)sb.Capacity, out _) ||
-            !string.Equals(sb.ToString(), "Winlogon", StringComparison.OrdinalIgnoreCase))
-        {
-            CloseDesktop(h);
-            return IntPtr.Zero;
-        }
-        if (!SetThreadDesktop(h))
-        {
-            CloseDesktop(h);
-            return IntPtr.Zero;
-        }
-        return h; // caller keeps it open for the thread's lifetime (released at exit)
     }
 }
 
@@ -280,6 +197,9 @@ internal sealed class SessionPipeServer
         _secure = secure;
     }
 
+    // Accept here (bounds live instances), then hand the connected instance to its
+    // own task — one wedged caller can never occupy the accept slot. Disposal
+    // ownership moves with the instance: the handler task disposes it.
     public async Task RunAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)

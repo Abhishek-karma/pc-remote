@@ -1,22 +1,18 @@
 // Authenticated local IPC over named pipes.
 //
-// Boundary rules (requirement 11):
+// Boundary rules:
 //   * The service exposes \\.\pipe\PCRemoteCtl. Tray and session helpers
 //     connect as clients; there is no unrestricted local TCP surface.
-//   * The pipe ACL grants access to SYSTEM, Administrators and the
-//     interactive Users group. Privileged operations (secure-desktop input,
-//     SAS, power, update apply, token revocation) are additionally gated on
-//     the *caller's* token: the service impersonates the pipe client and
-//     refuses elevated-only requests from unelevated processes.
-//
-// IMPORTANT: the client must NOT set PipeOptions.CurrentUserOnly. Every
-// IPC peer is cross-user by design (tray/user-process -> SYSTEM service and
-// SYSTEM service -> user-owned session helper) and CurrentUserOnly forbids
-// connecting to a server created by a different user (it also compares
-// elevation level). Authorization is the pipe ACL + privilege gate below.
-//   * Every message is a JSON IpcMessage with a type from a fixed allowlist.
-//     Payloads never include pairing codes or tokens except in
-//     server-to-tray status replies the tray already displays.
+//   * The pipe ACL grants access to SYSTEM, Administrators and the interactive
+//     Users group. Privileged operations are additionally gated on the CALLER's
+//     token: the service impersonates the pipe client and refuses elevated-only
+//     requests from unelevated processes.
+//   * PipeOptions.CurrentUserOnly must NOT be set: every IPC peer is cross-user
+//     by design (tray/user-process -> SYSTEM service and SYSTEM service ->
+//     user-owned session helper) and CurrentUserOnly forbids connecting to a
+//     server created by a different user. Authorization is the ACL + privilege.
+//   * Every message is JSON with a type from a fixed allowlist. Payloads never
+//     carry pairing codes or tokens except in status replies the tray displays.
 
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -36,11 +32,7 @@ public class IpcMessage
     [JsonPropertyName("serviceState")] public string? ServiceState { get; set; }   // "running" | "starting" | "error"
     [JsonPropertyName("sessionState")] public string? SessionState { get; set; }   // normal | locked | secure_desktop | logon
     [JsonPropertyName("error")] public string? Error { get; set; }
-    [JsonPropertyName("version")] public string? Version { get; set; }
     [JsonPropertyName("ok")] public bool? Ok { get; set; }
-// Input request payload (service -> session helper). The command string is
-// re-validated by the helper against the same allowlist before execution.
-    [JsonPropertyName("command")] public string? Command { get; set; }
     [JsonPropertyName("payload")] public JsonElement? Payload { get; set; }
 }
 
@@ -48,14 +40,10 @@ public static class IpcEndpoints
 {
     public const string ControlPipe = "PCRemoteCtl";
 
-    /// <summary>
-    /// Pipe name for a session input helper. The secure (Winlogon) helper and
-    /// the normal-desktop helper both run in the same console session, so the
-    /// mode MUST be part of the name — otherwise both processes create
-    /// instances of the same pipe and a command can be served by the wrong
-    /// helper (a UAC keystroke into the user desktop, or vice versa).
-    /// Both the service and the helper derive the name from here.
-    /// </summary>
+    /// <summary>Names the helper pipe. The mode must be part of the name: both
+    /// helpers run in the same console session, so without it a command can be
+    /// served by the wrong helper (a UAC keystroke into the user desktop, or
+    /// vice versa).</summary>
     public static string SessionPipe(int sessionId, bool secure) =>
         $"PCRemoteSessionCtl-{sessionId}-{(secure ? "secure" : "session")}";
 }
@@ -94,12 +82,9 @@ public static class IpcSecurity
     }
 
 /// <summary>
-    /// Classifies the caller of a connected pipe client. The identity is taken
-    /// from the pipe itself by impersonating the client for the duration of the
-    /// check, so it cannot be spoofed by PID reuse between a PID lookup and the
-    /// token read. Returns Elevated for SYSTEM or admin-token processes;
-    /// Standard otherwise. Never throws - an unresolvable caller is treated
-    /// as Standard (least privilege).
+    /// Classifies the caller by impersonating it, so the identity comes from
+    /// the pipe and cannot be spoofed by PID reuse. Never throws — an
+    /// unresolvable caller is treated as Standard (least privilege).
     /// </summary>
     public static IpcPrivilege GetCallerPrivilege(NamedPipeServerStream server)
     {
@@ -108,9 +93,8 @@ public static class IpcSecurity
             if (!server.IsConnected) return IpcPrivilege.Standard;
 
             var privilege = IpcPrivilege.Standard;
-            // RunAsClient impersonates the connected client on this thread only
-            // and reverts automatically, so WindowsIdentity.GetCurrent() below is
-            // the *client's' token, not ours.
+            // RunAsClient impersonates the connected client on this thread only,
+            // so GetCurrent() below is the CLIENT's token, not ours.
             server.RunAsClient(() =>
             {
                 using var identity = WindowsIdentity.GetCurrent();
@@ -124,7 +108,6 @@ public static class IpcSecurity
         }
         catch
         {
-            // Impersonation unsupported/failed - least privilege.
             return IpcPrivilege.Standard;
         }
     }
@@ -152,22 +135,15 @@ public sealed class IpcClient : IDisposable
         // stream would leak as a live, never-written zombie that occupies a
         // server pipe instance forever.
         if (_pipe is { IsConnected: true }) return;
-        // NOTE: deliberately no PipeOptions.CurrentUserOnly here. Every IPC
-        // peer is cross-user (tray/user-process -> SYSTEM service, and SYSTEM
-        // service -> user-owned session helper) and CurrentUserOnly refuses to
-        // connect to a server created by a different user/elevation level.
-        // Authorization is the server-side pipe ACL plus IpcPrivilege.
+        // Deliberately no PipeOptions.CurrentUserOnly: every IPC peer is cross-user.
         _pipe = new NamedPipeClientStream(_serverName, _pipeName, PipeDirection.InOut,
             PipeOptions.Asynchronous);
         _pipe.Connect(timeoutMs);
     }
 
-/// <summary>Sends one message and waits for the reply. Each request uses a
-/// fresh connection — IPC traffic is tiny and this keeps the server loop
-/// one-request-per-client, matching NamedPipeServerStream semantics.
-/// timeoutMs bounds the WHOLE exchange (connect + write + reply read): a
-/// reply wait with no deadline would wedge the client — and, on a sequential
-/// server, the server slot with it.</summary>
+/// <summary>Sends one message and waits for the reply. Each request uses a fresh
+    /// connection. timeoutMs bounds the WHOLE exchange: a reply wait with no
+    /// deadline would wedge the client and, on a sequential server, the slot.</summary>
     public IpcMessage? RoundTrip(IpcMessage request, int timeoutMs = 5000)
     {
         Connect(timeoutMs);

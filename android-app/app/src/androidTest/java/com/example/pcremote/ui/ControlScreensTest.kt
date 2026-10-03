@@ -17,7 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Basic Compose checks for the control screens (11-TESTING-STRATEGY.md):
+ * Basic Compose checks for the control screens:
  * modifier-lock state and the Shutdown confirmation dialog. The
  * RemoteConnection here never connects, so sends are harmless no-ops.
  */

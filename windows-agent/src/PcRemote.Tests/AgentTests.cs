@@ -205,8 +205,8 @@ public class CommandAllowlistTests
         foreach (var cmd in new[]
                  {
                      "mouse_move", "mouse_click", "mouse_scroll", "key_press", "text_input",
-                     "media_control", "system_power", "sas", "session_status",
-                     "stream_request", "disconnect",
+                     "media_control", "system_power", "sas", "session_status", "release_all",
+                     "disconnect",
                  })
         {
             Assert.True(CommandAllowlist.IsAllowed(cmd), cmd);
@@ -224,14 +224,13 @@ public class MdnsAdvertiserTests
 }
 
 // Regression tests for the IPC privilege boundary and the trust-material
-// rules introduced with the 0.2.0 service split. These assert the properties
-// SECURITY.md claims, since a silent regression here would re-open a local
-// privilege-escalation path (unprivileged process -> trusted token).
+// rules. These assert the properties SECURITY.md claims, since a silent
+// regression here would re-open a local privilege-escalation path
+// (unprivileged process -> trusted token).
 public class IpcPrivilegeBoundaryTests
 {
     private static IpcCoordinator MakeCoordinator(PairingStore pairing) =>
-        new(pairing, "test-pc-id", new InputRouter(new SessionManager()), new SessionManager(),
-            new CancellationTokenSource());
+        new(pairing, new SessionManager());
 
     [Fact]
     public void MigrateTokensIsRefusedForUnelevatedCaller()
@@ -271,8 +270,6 @@ public class IpcPrivilegeBoundaryTests
 
     [Theory]
     [InlineData("revoke_all_devices")]
-    [InlineData("update_apply")]
-    [InlineData("update_check")]
     [InlineData("generate_pairing_code")]
     [InlineData("desktop_report")]
     public void PrivilegedOperationsAreRefusedForUnelevatedCaller(string type)
@@ -338,21 +335,34 @@ public class SessionPipeNamingTests
     }
 }
 
-public class UpdateVersionComparisonTests
+public class SecureDesktopTests
 {
+    [Fact]
+    public void InputDesktopAccessIncludesSwitchDesktopRight()
+    {
+        // Regression: the secure helper used to open the input desktop with
+        // DESKTOP_READOBJECTS only. SetThreadDesktop rejects such a handle
+        // (ERROR_ACCESS_DENIED), so EVERY command relayed to the lock screen
+        // was refused and the phone saw "input_unavailable".
+        Assert.Equal(SecureDesktop.DESKTOP_SWITCHDESKTOP,
+            SecureDesktop.InputDesktopAccess & SecureDesktop.DESKTOP_SWITCHDESKTOP);
+        Assert.Equal(SecureDesktop.DESKTOP_READOBJECTS,
+            SecureDesktop.InputDesktopAccess & SecureDesktop.DESKTOP_READOBJECTS);
+    }
+
     [Theory]
-    [InlineData("0.2.1", "0.2.0", true)]
-    [InlineData("v0.3.0", "0.2.9", true)]
-    [InlineData("1.0.0", "0.9.9", true)]
-    // Regression: plain string inequality reported these as updates.
-    [InlineData("0.1.9", "0.2.0", false)]   // downgrade
-    [InlineData("0.2.0", "0.2.0", false)]   // same
-    [InlineData("0.2.0.1", "0.2.0", true)]  // local extra revision
-    [InlineData("0.2.0", "0.2.0-beta", false)]
-    [InlineData("garbage", "0.2.0", false)]
-    [InlineData("", "0.2.0", false)]
-    public void DetectsOnlyStrictlyNewerVersions(string candidate, string current, bool expected) =>
-        Assert.Equal(expected, UpdateCoordinator.IsNewerVersion(candidate, current));
+    [InlineData("Winlogon", true)]
+    [InlineData("winlogon", true)]
+    [InlineData("Default", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void OnlyTheWinlogonDesktopCountsAsSecure(string? name, bool expected)
+    {
+        // The secure helper must refuse to act while the normal desktop is
+        // active: a SYSTEM process injecting into the user session behind the
+        // user's back is exactly what this check prevents.
+        Assert.Equal(expected, SecureDesktop.IsSecureDesktop(name));
+    }
 }
 
 public class WsTlsIntegrationTests

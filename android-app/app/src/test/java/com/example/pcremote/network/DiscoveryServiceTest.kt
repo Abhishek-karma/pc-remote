@@ -6,7 +6,7 @@ import kotlin.test.assertTrue
 
 /**
  * DiscoveryService logic against a fake NsdGateway — no real networking
- * (per 11-TESTING-STRATEGY.md). Posting is injected synchronously so
+ * (per Posting is injected synchronously so
  * snapshot state is observable directly after each callback.
  */
 class DiscoveryServiceTest {

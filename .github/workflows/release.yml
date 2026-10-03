@@ -61,7 +61,7 @@ jobs:
             Write-Warning "No signing certificate configured; skipping signature validation (unsigned dev release)."
             exit 0
           }
-          $staged = @("PCRemoteService.exe","PCRemoteSession.exe","PCRemoteSession.UIA.exe","PCRemoteTray.exe") |
+          $staged = @("PCRemoteService.exe","PCRemoteSession.exe","PCRemoteTray.exe") |
             ForEach-Object { Get-AuthenticodeSignature "installer/staging/$_" }
           $invalid = $staged | Where-Object { $_.Status -ne 'Valid' }
           if ($invalid) { $invalid | ForEach-Object { throw "invalid signature: $($_.Path)" } }

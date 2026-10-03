@@ -1,8 +1,6 @@
-// WSS control channel: listener + per-connection state machine.
-// Runs inside the Windows service (LocalSystem), so the control surface
-// survives logoff, lock, tray crashes and reboot (requirement 1).
-// Authentication and pairing live here; the JSON channel carries control
-// traffic only — video frames never travel through it (requirement 6).
+// WSS control channel: listener + per-connection state machine. Runs inside the
+// LocalSystem service, so the control surface survives logoff, lock, tray
+// crashes and reboot. Carries control traffic only — never video frames.
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -243,7 +241,8 @@ public sealed class ControlChannel
         finally
         {
             _connected.TryRemove(connKey, out _);
-            InputRouter.ReleaseAllButtons();
+            // Never leave the PC with a mouse button held down.
+            await _inputRouter.ReleaseAllButtons();
             Console.WriteLine($"[-] {clientIp} disconnected");
             PrintConnectedCount();
             client.Dispose();
@@ -378,7 +377,7 @@ public sealed class ControlChannel
 
                 case "sas":
                     // Secure attention sequence — the one correct way to
-                    // simulate Ctrl+Alt+Del (requirement 4). Only SYSTEM
+                    // simulate Ctrl+Alt+Del. Only SYSTEM
                     // services may call SendSAS; this process qualifies.
                     SasController.SendSas();
                     await SendAckAsync(socket, msg.RequestId);
@@ -404,12 +403,6 @@ public sealed class ControlChannel
                     }
                     PowerController.Execute(powerAct);
                     await SendAckAsync(socket, msg.RequestId);
-                    break;
-
-                case "stream_request":
-                    // Media channel negotiation is Phase 5; acknowledge with
-                    // "not_ready" so clients can degrade gracefully.
-                    await SendErrorAsync(socket, msg.RequestId, "not_ready");
                     break;
 
                 case "disconnect":

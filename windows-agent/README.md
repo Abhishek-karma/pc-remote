@@ -20,11 +20,14 @@ state and session management — surviving boot, logoff, lock and tray crashes.
 
 | Component | Token | Role |
 |---|---|---|
-| `PCRemoteService.exe` | LocalSystem (session 0) | WSS control channel :58642, auth/pairing, session detection, SAS, updates |
+| `PCRemoteService.exe` | LocalSystem (session 0) | WSS control channel :58642, auth/pairing, session detection, SAS |
 | `PCRemoteSession.exe` | logged-on user | normal desktop input injection |
 | `PCRemoteSession.exe --secure-input` | SYSTEM in console session | UAC / lock-screen / logon desktop input |
-| `PCRemoteSession.UIA.exe` | user + uiAccess manifest | elevated-window input (signed builds) |
-| `PCRemoteTray.exe` | logged-on user | status UI only — talks to the service over authenticated IPC |
+| `PCRemoteTray.exe` | logged-on user | status + pairing code UI — talks to the service over authenticated IPC |
+
+Three binaries, two privilege levels. Elevated windows are **not** reachable
+(Windows UIPI blocks lower-integrity input; there is no UIAccess helper — an
+unsigned `uiAccess` binary cannot be launched at all).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and privilege
 boundaries, and [TEST-MATRIX.md](TEST-MATRIX.md) for the validation matrix.
@@ -38,6 +41,9 @@ dotnet test src/PcRemote.Tests/PcRemote.Tests.csproj
 ./installer/build.ps1          # → dist/PC-Remote-Setup.exe (+ .sha256)
 ```
 
+To test a local build against an existing install, run
+`deploy\deploy-update.ps1` (self-elevates) instead of building an installer.
+
 ## 🛡️ Security notes
 
 - WSS-only (TLS mandatory, no plaintext fallback), trust-on-first-use
@@ -46,5 +52,6 @@ dotnet test src/PcRemote.Tests/PcRemote.Tests.csproj
 - Firewall rules are private/domain profile, local-subnet scoped, never Public.
 - Remote keystrokes are executed and discarded — never logged, stored or
   analyzed. No global keyboard hooks. No custom credential provider.
-- Updates verify SHA-256 **and** Authenticode before anything is executed.
+- There is no in-app updater: an update is just running the new installer over
+  the old one, so there is no downloaded-artifact execution path to harden.
 

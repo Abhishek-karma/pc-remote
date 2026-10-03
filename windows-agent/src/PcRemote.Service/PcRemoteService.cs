@@ -1,12 +1,10 @@
 // PC Remote Service - Windows service host.
 //
-// Privilege boundary (requirements 1, 2): this process (LocalSystem) owns
-// network communication, authentication/pairing state, session detection,
-// privileged operations and the WSS control channel. It never renders UI and
-// never runs as the user. Desktop interaction is delegated to the
-// per-session PCRemoteSession helper process (user token) and to the
-// secure-input helper (SYSTEM token inside the console session) for the
-// Winlogon/secure desktops.
+// Privilege boundary: this process (LocalSystem) owns networking, auth/pairing,
+// session detection, privileged operations and the WSS control channel. It never
+// renders UI and never runs as the user. Desktop interaction is delegated to
+// the PCRemoteSession helper (user token, normal desktop) and to the same
+// helper in --secure-input mode (SYSTEM token, Winlogon desktop).
 
 using System.ServiceProcess;
 using PcRemote.Core;
@@ -76,7 +74,7 @@ public sealed class PcRemoteService : ServiceBase
 
         _inputRouter = new InputRouter(_sessionManager);
 
-        var ipc = new IpcCoordinator(pairing, pcId, _inputRouter, _sessionManager, _cts);
+        var ipc = new IpcCoordinator(pairing, _sessionManager);
         _ipcServer = new IpcServer(IpcEndpoints.ControlPipe, ipc.HandleIpc);
         _ipcServer.Start();
 

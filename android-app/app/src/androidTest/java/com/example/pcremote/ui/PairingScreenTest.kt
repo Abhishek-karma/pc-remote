@@ -24,7 +24,7 @@ import org.junit.runner.RunWith
 /**
  * Compose UI tests for the discovery section of the Pairing screen, run
  * against a fake DiscoveryService (no real NsdManager / no network — per
- * 11-TESTING-STRATEGY.md).
+ *
  */
 @RunWith(AndroidJUnit4::class)
 class PairingScreenTest {

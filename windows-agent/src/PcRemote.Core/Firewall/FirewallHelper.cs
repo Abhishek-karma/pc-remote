@@ -1,5 +1,5 @@
 // PC Remote - Firewall rules
-// Least exposure (requirement 9): the WSS listener is allowed only on
+// Least exposure: the WSS listener is allowed only on
 // Private/Domain profiles and only for the local subnet; never on Public.
 // The installer creates the same rules at install time; this helper repairs
 // them if they are missing (e.g. after a Windows reset of the firewall).

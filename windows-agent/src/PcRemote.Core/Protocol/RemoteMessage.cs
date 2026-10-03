@@ -36,17 +36,6 @@ public class RemoteMessage
     /// <summary>Desktop/session state snapshot (auth_ok and session_status): "normal",
     /// "locked", "secure_desktop" (UAC), or "logon". Lets the client render context-aware UI.</summary>
     [JsonPropertyName("sessionState")] public string? SessionState { get; set; }
-
-    /// <summary>Reserved for the media channel handshake (Phase 5): requested protocol
-    /// ("h264" | "jpeg"), port and capability flags. Frames never travel on this JSON channel.</summary>
-    [JsonPropertyName("stream")] public StreamOffer? Stream { get; set; }
-}
-
-public class StreamOffer
-{
-    [JsonPropertyName("protocol")] public string Protocol { get; set; } = "";
-    [JsonPropertyName("port")] public int Port { get; set; }
-    [JsonPropertyName("maxFps")] public int MaxFps { get; set; }
 }
 
 /// <summary>
@@ -68,7 +57,7 @@ public static class CommandAllowlist
         "system_power",
         "sas",             // secure attention sequence (Ctrl+Alt+Del) request
         "session_status",  // ask for current session/desktop state
-        "stream_request",  // Phase 5 media channel negotiation (accepted, reserved)
+        "release_all",    // drop held buttons/modifiers (also sent on disconnect)
         "disconnect",
     };
 

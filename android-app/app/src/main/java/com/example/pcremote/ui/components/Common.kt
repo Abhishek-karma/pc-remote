@@ -1,14 +1,11 @@
-package com.example.pcremote.ui.components
+﻿package com.example.pcremote.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -20,18 +17,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.RemoteConnection
-import com.example.pcremote.ui.theme.RemoteColors
 import com.example.pcremote.ui.theme.statusPending
 import com.example.pcremote.ui.theme.statusPositive
 
 /**
  * Single UI-facing connection state, derived from the one authoritative
- * source (RemoteConnection.state) — the shell and screens never keep their
+ * source (RemoteConnection.state) â€” the shell and screens never keep their
  * own "connected" boolean.
  */
 sealed interface ConnectionUiState {
@@ -52,31 +47,6 @@ fun RemoteConnection.uiState(state: ConnectionState): ConnectionUiState = when (
         else ConnectionUiState.Disconnected
 }
 
-/** ●/◌/○ status dot. Color is paired with a text label — never color alone. */
-@Composable
-fun StatusDot(color: Color, modifier: Modifier = Modifier, description: String) {
-    Box(
-        modifier = modifier
-            .size(8.dp)
-            .background(color, CircleShape)
-            .semantics { contentDescription = description }
-    )
-}
-
-@Composable
-fun SectionHeader(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text.uppercase(),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = modifier.padding(top = 8.dp, bottom = 4.dp)
-    )
-}
-
-/**
- * Intentional empty state: what happened, why, what to do next.
- * All three parts are required by the caller.
- */
 @Composable
 fun EmptyState(
     icon: ImageVector,
@@ -110,7 +80,7 @@ fun EmptyState(
     }
 }
 
-/** Compact icon button with guaranteed content description (13 §2). */
+/** Compact icon button with guaranteed content description (13 Â§2). */
 @Composable
 fun RemoteIconButton(
     icon: ImageVector,

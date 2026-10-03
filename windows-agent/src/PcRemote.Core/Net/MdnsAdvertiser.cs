@@ -2,7 +2,7 @@
 // Uses Makaretu.Dns.Multicast (DNS-SD over mDNS) to advertise the service
 // as "_pc-remote._tcp." on the LAN so the Android app can discover the PC
 // without typing an IP address. The TXT record carries the stable pcid so
-// clients can recognize the same PC across DHCP changes (requirement 10).
+// clients can recognize the same PC across DHCP changes.
 
 using Makaretu.Dns;
 

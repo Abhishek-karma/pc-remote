@@ -1,6 +1,6 @@
 // Server certificate + stable PC identity.
 //
-// Identity rules (requirement 10):
+// Identity rules:
 //   * The self-signed certificate is generated ONCE and then reused forever.
 //     It is never regenerated because the local IP addresses changed — the
 //     Android client pins the certificate fingerprint (trust-on-first-use),

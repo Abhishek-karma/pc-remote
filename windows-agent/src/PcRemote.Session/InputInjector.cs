@@ -1,5 +1,5 @@
-// Win32 input injection primitives (SendInput / keybd_event) shared by the
-// session helper, the UIAccess helper and the secure-input mode. This code is
+// Win32 input injection primitives (SendInput / keybd_event) used by every
+// mode of the session helper (normal desktop and --secure-input). This code is
 // stateless with respect to credentials — it never stores, logs or echoes the
 // text it is asked to type (requirement 5: no password logging anywhere).
 
@@ -61,19 +61,6 @@ public static class InputInjector
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool SetThreadDesktop(IntPtr desktop);
-
-    [DllImport("user32.dll")]
-    private static extern bool CloseDesktop(IntPtr desktop);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool GetUserObjectInformation(IntPtr hObj, uint index,
-        System.Text.StringBuilder info, uint nMax, out uint length);
 
     private static bool Send(INPUT[] inputs)
     {
@@ -252,51 +239,6 @@ public static class InputInjector
         keybd_event(vk, 0, 0, IntPtr.Zero);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
         return true;
-    }
-
-    /// <summary>Switches this thread onto the desktop that currently receives
-    /// input, but only when that is the Winlogon desktop (secure desktop:
-    /// UAC prompts, lock screen, logon UI). A helper running as SYSTEM in the
-    /// console session can open and inject there; the same call from a normal
-    /// user process fails and leaves the thread untouched. Returns the desktop
-    /// name that was active before the switch, or null.</summary>
-    public static string? EnterSecureDesktopIfPresent()
-    {
-        const uint DESKTOP_READOBJECTS = 0x0001;
-        const uint UOI_NAME = 2;
-        var h = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
-        if (h == IntPtr.Zero)
-        {
-            Console.WriteLine("[!] OpenInputDesktop failed (desktop inaccessible)");
-            return null;
-        }
-        try
-        {
-            var sb = new System.Text.StringBuilder(256);
-            if (!GetUserObjectInformation(h, UOI_NAME, sb, (uint)sb.Capacity, out _))
-                return null;
-            var name = sb.ToString();
-            if (!string.Equals(name, "Winlogon", StringComparison.OrdinalIgnoreCase))
-            {
-                CloseDesktop(h);
-                return null; // normal desktop — nothing to do
-            }
-            // Switch THIS thread to the secure desktop so subsequent SendInput
-            // targets the UAC/lock/logon UI.
-            if (!SetThreadDesktop(h))
-            {
-                Console.WriteLine($"[!] SetThreadDesktop(Winlogon) failed: {Marshal.GetLastWin32Error()}");
-                CloseDesktop(h);
-                return null;
-            }
-            Console.WriteLine("[+] Secure input helper attached to Winlogon desktop");
-            return name;
-        }
-        catch
-        {
-            CloseDesktop(h);
-            return null;
-        }
     }
 
     public static void ReleaseAllButtons()
