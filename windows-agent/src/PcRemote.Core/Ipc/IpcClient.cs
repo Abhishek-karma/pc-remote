@@ -84,11 +84,11 @@ public static class IpcSecurity
         ps.AddAccessRule(new PipeAccessRule(sidUsers,
             PipeAccessRights.Read | PipeAccessRights.Write, AccessControlType.Allow));
         // Creating additional instances of an existing pipe requires
-        // FILE_CREATE_PIPE_INSTANCE; without a CreatorOwner ACE the server
-        // loop dies with Access denied on its second iteration whenever the
-        // creating account is not SYSTEM/Admin (e.g. the session helper).
+        // FILE_CREATE_PIPE_INSTANCE. Grant it to the creating account
+        // explicitly — CreatorOwner does not reliably match the creating
+        // token at access-check time (verified on Win11 25H2).
         ps.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
+            WindowsIdentity.GetCurrent().User!,
             PipeAccessRights.FullControl, AccessControlType.Allow));
         return ps;
     }
@@ -147,6 +147,11 @@ public sealed class IpcClient : IDisposable
 
     public void Connect(int timeoutMs = 5000)
     {
+        // Idempotent: RoundTrip callers that pre-connect (for a distinct
+        // connect timeout) must not open a SECOND connection here — the first
+        // stream would leak as a live, never-written zombie that occupies a
+        // server pipe instance forever.
+        if (_pipe is { IsConnected: true }) return;
         // NOTE: deliberately no PipeOptions.CurrentUserOnly here. Every IPC
         // peer is cross-user (tray/user-process -> SYSTEM service, and SYSTEM
         // service -> user-owned session helper) and CurrentUserOnly refuses to

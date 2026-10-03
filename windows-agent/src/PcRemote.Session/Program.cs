@@ -295,12 +295,13 @@ internal sealed class SessionPipeServer
                 ps.AddAccessRule(new PipeAccessRule(
                     new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
                     PipeAccessRights.FullControl, AccessControlType.Allow));
-                // CreatorOwner: the helper itself (a user token) must be able
-                // to create the second and later pipe instances — without
-                // FILE_CREATE_PIPE_INSTANCE the accept loop fails after the
-                // very first connection.
+                // The helper's own user: creating additional instances of an
+                // existing pipe requires FILE_CREATE_PIPE_INSTANCE from the
+                // DACL. (CreatorOwner was tried and empirically does not match
+                // the creating token at access-check time on Win11 25H2 — the
+                // explicit user SID does.)
                 ps.AddAccessRule(new PipeAccessRule(
-                    new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
+                    WindowsIdentity.GetCurrent().User!,
                     PipeAccessRights.FullControl, AccessControlType.Allow));
 
                 server = NamedPipeServerStreamAcl.Create(
@@ -319,19 +320,31 @@ internal sealed class SessionPipeServer
             var current = server;
             try
             {
-                // Create the next instance only after this one is consumed, so
-                // live instances track real concurrency instead of racing to
-                // MaxAllowedServerInstances.
+                // Wait here (bounds live instances), then hand the connected
+                // instance to its own task — one wedged caller can never
+                // occupy the accept slot. DISPOSAL OWNERSHIP moves with the
+                // instance: the handler task disposes it; nothing on this
+                // path may touch it afterwards.
                 await current.WaitForConnectionAsync(ct);
-                await HandleAsync(current);
+                Console.WriteLine("[session] client connected");
+                var handled = current;
+                _ = Task.Run(async () =>
+                {
+                    try { await HandleAsync(handled); }
+                    catch (Exception ex) { Console.WriteLine($"[session] handler error: {ex.Message}"); }
+                    finally { try { handled.Dispose(); } catch { } }
+                });
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                try { current.Dispose(); } catch { }
+                throw;
+            }
             catch (Exception ex)
             {
+                // Accept failed before any hand-off: this instance is ours to
+                // clean up. Once handed off, the handler task owns disposal.
                 Console.WriteLine($"[session] connection error: {ex.Message}");
-            }
-            finally
-            {
                 try { current.Dispose(); } catch { }
             }
         }
@@ -340,11 +353,16 @@ internal sealed class SessionPipeServer
     private async Task HandleAsync(NamedPipeServerStream server)
     {
         var lenBuf = new byte[4];
-        if (!await ReadExactAsync(server, lenBuf)) return;
+        if (!await ReadExactAsync(server, lenBuf))
+        {
+            Console.WriteLine("[session] client connected but sent nothing (abandoned?)");
+            return;
+        }
         var len = BitConverter.ToInt32(lenBuf);
         if (len <= 0 || len > (1 << 20)) return;
         var body = new byte[len];
         if (!await ReadExactAsync(server, body)) return;
+        Console.WriteLine($"[session] request received ({len} bytes)");
 
         IpcMessage? request;
         try { request = JsonSerializer.Deserialize<IpcMessage>(Encoding.UTF8.GetString(body)); }

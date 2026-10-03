@@ -205,12 +205,21 @@ public sealed class SessionWorkerClient : ISessionInputPath
 
     private async Task<bool> SendInputCommandAsync(string command, RemoteMessage payload)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             // Name carries the mode so the secure and normal helpers can never
             // answer each other's requests (see IpcEndpoints.SessionPipe).
             using var client = new IpcClient(IpcEndpoints.SessionPipe(_sessionId, _secure));
-            client.Connect(1500);
+            try
+            {
+                client.Connect(1500);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[!] Relay connect to session {_sessionId} timed out after {sw.ElapsedMilliseconds} ms ({ex.GetType().Name}) - helper pipe not listening?");
+                return false;
+            }
             var reply = client.RoundTrip(new IpcMessage
             {
                 Type = command,
@@ -218,11 +227,14 @@ public sealed class SessionWorkerClient : ISessionInputPath
                 SessionId = _sessionId,
                 Payload = System.Text.Json.JsonSerializer.SerializeToElement(payload),
             }, 2000);
+            // Only surface slow relays — every mouse_move would flood the log.
+            if (sw.ElapsedMilliseconds > 50)
+                Console.WriteLine($"[relay] {command} ok={(reply?.Ok == true)} in {sw.ElapsedMilliseconds} ms");
             return reply?.Ok == true;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Input relay to session {_sessionId} ({command}) failed: {ex.Message}");
+            Console.WriteLine($"[!] Input relay to session {_sessionId} ({command}) failed after {sw.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }
