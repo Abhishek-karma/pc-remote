@@ -74,3 +74,5 @@ brag-output-*/
 *.csproj.user
 *.user
 TestResults/
+windows-agent/deploy/staging/
+windows-agent/deploy/deploy.log
