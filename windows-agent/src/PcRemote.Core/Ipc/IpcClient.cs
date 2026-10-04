@@ -34,6 +34,10 @@ public class IpcMessage
     [JsonPropertyName("error")] public string? Error { get; set; }
     [JsonPropertyName("ok")] public bool? Ok { get; set; }
     [JsonPropertyName("payload")] public JsonElement? Payload { get; set; }
+
+    // Streaming diagnostics (status reply).
+    [JsonPropertyName("streaming")] public bool? Streaming { get; set; }
+    [JsonPropertyName("streamClients")] public int? StreamClients { get; set; }
 }
 
 public static class IpcEndpoints

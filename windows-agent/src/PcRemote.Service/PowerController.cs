@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using PcRemote.Core;
 
 namespace PcRemote.Service;
 
@@ -44,13 +45,13 @@ public static class PowerController
             var sessionId = WTSGetActiveConsoleSessionId();
             if (sessionId == 0 || !File.Exists(exePath))
             {
-                Console.WriteLine("[!] Cannot lock: no active console session");
+                AgentLog.Warn("Cannot lock: no active console session");
                 return;
             }
 
             if (!WTSQueryUserToken(sessionId, out var token))
             {
-                Console.WriteLine("[!] Cannot lock: no user token in console session");
+                AgentLog.Warn("Cannot lock: no user token in console session");
                 return;
             }
             using (token)
@@ -68,7 +69,7 @@ public static class PowerController
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Lock request failed: {ex.Message}");
+            AgentLog.Warn($"Lock request failed: {ex.Message}");
         }
     }
 

@@ -26,7 +26,7 @@ public static class FirewallHelper
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Firewall auto-config notice: {ex.Message}");
+            AgentLog.Warn($"Firewall auto-config notice: {ex.Message}");
         }
     }
 

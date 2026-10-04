@@ -36,6 +36,22 @@ public class RemoteMessage
     /// <summary>Desktop/session state snapshot (auth_ok and session_status): "normal",
     /// "locked", "secure_desktop" (UAC), or "logon". Lets the client render context-aware UI.</summary>
     [JsonPropertyName("sessionState")] public string? SessionState { get; set; }
+
+    // --- v1 streaming fields (additive; ignored by older clients) ---
+
+    /// <summary>Media channel state (server → client on stream_start/stop): "active",
+    /// "stopped", or "error".</summary>
+    [JsonPropertyName("streamState")] public string? StreamState { get; set; }
+
+    /// <summary>Negotiated capture dimensions (stream_state) in physical pixels.</summary>
+    [JsonPropertyName("width")] public int? Width { get; set; }
+    [JsonPropertyName("height")] public int? Height { get; set; }
+    [JsonPropertyName("fps")] public int? Fps { get; set; }
+
+    /// <summary>Absolute coordinates (remote-desktop view): pixel position in the
+    /// captured desktop's coordinate space, for mouse_move_abs.</summary>
+    [JsonPropertyName("x")] public int? X { get; set; }
+    [JsonPropertyName("y")] public int? Y { get; set; }
 }
 
 /// <summary>
@@ -49,6 +65,7 @@ public static class CommandAllowlist
     {
         "auth",            // handled before this set is consulted; listed for documentation
         "mouse_move",
+        "mouse_move_abs",  // absolute desktop coordinates (remote-desktop view)
         "mouse_click",
         "mouse_scroll",
         "key_press",
@@ -59,6 +76,10 @@ public static class CommandAllowlist
         "session_status",  // ask for current session/desktop state
         "release_all",    // drop held buttons/modifiers (also sent on disconnect)
         "disconnect",
+        // Media channel lifecycle (sent on the /stream socket after auth):
+        "stream_start",     // request the agent to begin capture+encode and push frames
+        "stream_stop",      // stop the stream and release the agent encoder
+        "keyframe_request", // ask the encoder for an IDR (join, loss, decoder reset)
     };
 
     /// <summary>Commands that may only run when a paired client asks — no extra

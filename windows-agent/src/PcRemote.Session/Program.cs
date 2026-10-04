@@ -15,6 +15,7 @@ using System.Text;
 using System.Text.Json;
 using PcRemote.Core;
 using PcRemote.Session;
+using PcRemote.Session.Streaming;
 
 internal static class Program
 {
@@ -28,6 +29,7 @@ internal static class Program
 
         var secure = args.Contains("--secure-input");
         AgentLog.Init(Path.Combine(PairingStore.ServiceDataDir, "logs"));
+        AgentLog.SetSubsystem(secure ? "secure" : "session");
 
         // Both modes derive the pipe name from this process's REAL session id:
         // it must match the id the service launched us with, and WTS cannot be
@@ -38,14 +40,17 @@ internal static class Program
         // secure helpers can never be confused for one another.
         var pipeName = IpcEndpoints.SessionPipe(sessionId, secure);
 
-        Console.WriteLine($"[session] helper starting (secure={secure}, session={sessionId}, pipe={pipeName})");
+        AgentLog.Info($"helper starting (secure={secure}, session={sessionId}, pipe={pipeName})");
 
         var injector = new DesktopInjector(secure);
+        // Streaming is a user-session capability; the secure (Winlogon) helper must
+        // never capture or encode.
+        var coordinator = secure ? null : new StreamingCoordinator();
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-        var server = new SessionPipeServer(pipeName, injector, secure);
+        var server = new SessionPipeServer(pipeName, injector, secure, coordinator);
         var serverTask = server.RunAsync(cts.Token);
 
         if (secure)
@@ -85,7 +90,7 @@ internal static class Program
 
         try { await serverTask; } catch (OperationCanceledException) { }
         InputInjector.ReleaseAllButtons();
-        Console.WriteLine("[session] helper stopping");
+        AgentLog.Info("helper stopping");
         return 0;
     }
 
@@ -126,7 +131,7 @@ internal sealed class DesktopInjector
     /// must never be relayed into a user session.</summary>
     private static readonly HashSet<string> Allowed = new(StringComparer.Ordinal)
     {
-        "mouse_move", "mouse_click", "mouse_scroll", "key_press", "text_input", "media_control",
+        "mouse_move", "mouse_move_abs", "mouse_click", "mouse_scroll", "key_press", "text_input", "media_control",
         "release_all",
     };
 
@@ -148,6 +153,11 @@ internal sealed class DesktopInjector
                 return InputInjector.MoveMouseRelative(
                     Math.Clamp(msg.Dx ?? 0, -4096, 4096),
                     Math.Clamp(msg.Dy ?? 0, -4096, 4096));
+            case "mouse_move_abs":
+                // Desktop-view tap: absolute position in the captured coordinate space.
+                return InputInjector.MoveMouseAbsolute(
+                    Math.Clamp(msg.X ?? 0, 0, 1_000_000),
+                    Math.Clamp(msg.Y ?? 0, 0, 1_000_000));
             case "mouse_click":
                 var btn = (msg.Button ?? "left").ToLowerInvariant();
                 var act = (msg.Action ?? "click").ToLowerInvariant();
@@ -189,12 +199,15 @@ internal sealed class SessionPipeServer
     private readonly string _pipeName;
     private readonly DesktopInjector _injector;
     private readonly bool _secure;
+    private readonly StreamingCoordinator? _streaming;
 
-    public SessionPipeServer(string pipeName, DesktopInjector injector, bool secure)
+    public SessionPipeServer(string pipeName, DesktopInjector injector, bool secure,
+        StreamingCoordinator? streaming = null)
     {
         _pipeName = pipeName;
         _injector = injector;
         _secure = secure;
+        _streaming = streaming;
     }
 
     // Accept here (bounds live instances), then hand the connected instance to its
@@ -232,7 +245,7 @@ internal sealed class SessionPipeServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[session] pipe creation failed: {ex.Message}");
+                AgentLog.Error($"pipe creation failed: {ex.Message}");
                 await Task.Delay(3000, ct);
                 continue;
             }
@@ -246,12 +259,12 @@ internal sealed class SessionPipeServer
                 // instance: the handler task disposes it; nothing on this
                 // path may touch it afterwards.
                 await current.WaitForConnectionAsync(ct);
-                Console.WriteLine("[session] client connected");
+                AgentLog.Info("client connected");
                 var handled = current;
                 _ = Task.Run(async () =>
                 {
                     try { await HandleAsync(handled); }
-                    catch (Exception ex) { Console.WriteLine($"[session] handler error: {ex.Message}"); }
+                    catch (Exception ex) { AgentLog.Error($"handler error: {ex.Message}"); }
                     finally { try { handled.Dispose(); } catch { } }
                 });
             }
@@ -264,7 +277,7 @@ internal sealed class SessionPipeServer
             {
                 // Accept failed before any hand-off: this instance is ours to
                 // clean up. Once handed off, the handler task owns disposal.
-                Console.WriteLine($"[session] connection error: {ex.Message}");
+                AgentLog.Error($"connection error: {ex.Message}");
                 try { current.Dispose(); } catch { }
             }
         }
@@ -275,14 +288,14 @@ internal sealed class SessionPipeServer
         var lenBuf = new byte[4];
         if (!await ReadExactAsync(server, lenBuf))
         {
-            Console.WriteLine("[session] client connected but sent nothing (abandoned?)");
+            AgentLog.Debug("client connected but sent nothing (abandoned?)");
             return;
         }
         var len = BitConverter.ToInt32(lenBuf);
         if (len <= 0 || len > (1 << 20)) return;
         var body = new byte[len];
         if (!await ReadExactAsync(server, body)) return;
-        Console.WriteLine($"[session] request received ({len} bytes)");
+        AgentLog.Debug($"request received ({len} bytes)");
 
         IpcMessage? request;
         try { request = JsonSerializer.Deserialize<IpcMessage>(Encoding.UTF8.GetString(body)); }
@@ -290,6 +303,7 @@ internal sealed class SessionPipeServer
         if (request is null) return;
 
         var ok = false;
+        JsonElement? replyPayload = null;
         // Role guard: this process only ever serves the role it was launched
         // for. The pipe name already encodes it, but the request is verified
         // too so a future rename/caller bug cannot make the SYSTEM/Winlogon
@@ -297,7 +311,11 @@ internal sealed class SessionPipeServer
         var expectedRole = _secure ? "secure" : "session";
         if (!string.Equals(request.Role, expectedRole, StringComparison.Ordinal))
         {
-            Console.WriteLine($"[session] refused {request.Type}: role '{request.Role}' != '{expectedRole}'");
+            AgentLog.Warn($"refused {request.Type}: role '{request.Role}' != '{expectedRole}'");
+        }
+        else if (request.Type is "stream_start" or "stream_stop" or "stream_keyframe" or "stream_fps")
+        {
+            (ok, replyPayload) = HandleStreamCommand(request);
         }
         else if (request.Payload is { } payload)
         {
@@ -310,11 +328,66 @@ internal sealed class SessionPipeServer
             catch { ok = false; }
         }
 
-        var reply = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new IpcMessage { Type = request.Type, Ok = ok }));
+        var reply = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new IpcMessage
+        {
+            Type = request.Type,
+            Ok = ok,
+            Payload = replyPayload,
+        }));
         var replyLen = BitConverter.GetBytes(reply.Length);
         await server.WriteAsync(replyLen);
         await server.WriteAsync(reply);
         await server.FlushAsync();
+    }
+
+    /// <summary>Streaming lifecycle commands from the service. Only the normal
+    /// (user-session) helper has a coordinator; the secure helper refuses.</summary>
+    private (bool Ok, JsonElement? Payload) HandleStreamCommand(IpcMessage request)
+    {
+        if (_streaming is null)
+        {
+            AgentLog.Warn($"refused {request.Type}: no streaming coordinator in this helper");
+            return (false, null);
+        }
+
+        switch (request.Type)
+        {
+            case "stream_start":
+            {
+                var req = new StreamStartRequest();
+                try { if (request.Payload is { } p) req = p.Deserialize<StreamStartRequest>() ?? req; }
+                catch { /* fall back to defaults */ }
+
+                var info = _streaming.Start(req.Fps, req.Bitrate);
+                if (info is null) return (false, null); // no interactive desktop to capture
+
+                AgentLog.Info($"stream started: {info.Value.Width}x{info.Value.Height}@{info.Value.Fps}");
+                return (true, JsonSerializer.SerializeToElement(new StreamBindingInfo
+                {
+                    Path = info.Value.Path,
+                    Width = info.Value.Width,
+                    Height = info.Value.Height,
+                    Fps = info.Value.Fps,
+                }));
+            }
+            case "stream_stop":
+                _streaming.Stop();
+                AgentLog.Info("stream stopped");
+                return (true, null);
+            case "stream_keyframe":
+                _streaming.RequestKeyframe();
+                return (true, null);
+            case "stream_fps":
+            {
+                var req = new StreamFpsRequest();
+                try { if (request.Payload is { } p) req = p.Deserialize<StreamFpsRequest>() ?? req; }
+                catch { /* fall back to default */ }
+                _streaming.SetFps(req.Fps);
+                return (true, null);
+            }
+            default:
+                return (false, null);
+        }
     }
 
     private static async Task<bool> ReadExactAsync(PipeStream pipe, byte[] buffer)

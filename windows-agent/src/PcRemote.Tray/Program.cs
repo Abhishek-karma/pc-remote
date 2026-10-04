@@ -11,6 +11,7 @@ internal static class Program
     {
         AgentLog.Init(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCRemote", "logs"));
+        AgentLog.SetSubsystem("tray");
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.Run(new TrayApplicationContext(startMinimized: args.Contains("--minimized")));

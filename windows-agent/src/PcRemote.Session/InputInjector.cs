@@ -4,6 +4,7 @@
 // text it is asked to type (requirement 5: no password logging anywhere).
 
 using System.Runtime.InteropServices;
+using PcRemote.Core;
 
 namespace PcRemote.Session;
 
@@ -55,12 +56,22 @@ public static class InputInjector
     private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
     private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
     private const uint MOUSEEVENTF_WHEEL = 0x0800;
+    private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+    private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+
+    private const int SM_XVIRTUALSCREEN = 76;
+    private const int SM_YVIRTUALSCREEN = 77;
+    private const int SM_CXVIRTUALSCREEN = 78;
+    private const int SM_CYVIRTUALSCREEN = 79;
 
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint KEYEVENTF_UNICODE = 0x0004;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
 
     private static bool Send(INPUT[] inputs)
     {
@@ -69,7 +80,7 @@ public static class InputInjector
         if (res == 0)
         {
             int err = Marshal.GetLastWin32Error();
-            Console.WriteLine($"[!] SendInput returned 0, error={err}");
+            AgentLog.Error($"SendInput returned 0, error={err}");
             return false;
         }
         return true;
@@ -83,6 +94,45 @@ public static class InputInjector
             U = new InputUnion { mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = MOUSEEVENTF_MOVE } }
         };
         return Send([input]);
+    }
+
+    /// <summary>Absolute move in the CAPTURED coordinate space (virtual-desktop
+    /// pixels, exactly what ScreenCapture reports), so a tap on the Android
+    /// desktop view lands where the user touched.</summary>
+    public static bool MoveMouseAbsolute(int x, int y)
+    {
+        var (nx, ny) = NormalizeToVirtualDesktop(
+            x, y,
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN));
+
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dx = unchecked((int)nx),
+                    dy = unchecked((int)ny),
+                    dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                }
+            }
+        };
+        return Send([input]);
+    }
+
+    /// <summary>Pure mapping of desktop pixels to SendInput's normalized 0..65535
+    /// virtual-desktop space. Public + pure so the math is testable without
+    /// injecting real input.</summary>
+    public static (uint X, uint Y) NormalizeToVirtualDesktop(int x, int y, int originX, int originY, int width, int height)
+    {
+        if (width <= 1 || height <= 1) return (0, 0);
+        long nx = (long)(x - originX) * 65535 / (width - 1);
+        long ny = (long)(y - originY) * 65535 / (height - 1);
+        return ((uint)Math.Clamp(nx, 0, 65535), (uint)Math.Clamp(ny, 0, 65535));
     }
 
     public static bool MouseClick(string button, string action)
@@ -257,7 +307,7 @@ public static class InputInjector
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Error releasing buttons/modifiers: {ex.Message}");
+            AgentLog.Error($"Error releasing buttons/modifiers: {ex.Message}");
         }
     }
 

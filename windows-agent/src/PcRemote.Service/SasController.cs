@@ -4,6 +4,7 @@
 // (sas.dll), callable from a SYSTEM service — exactly this process.
 
 using System.Runtime.InteropServices;
+using PcRemote.Core;
 
 namespace PcRemote.Service;
 
@@ -20,11 +21,11 @@ public static class SasController
         try
         {
             SendSAS(asUser: false);
-            Console.WriteLine("[+] SAS sent");
+            AgentLog.Info("SAS sent");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] SendSAS failed: {ex.Message}");
+            AgentLog.Error($"SendSAS failed: {ex.Message}");
         }
     }
 }

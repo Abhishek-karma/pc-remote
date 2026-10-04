@@ -12,11 +12,20 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <Product>PC Remote Session Helper</Product>
     <ApplicationIcon>..\..\app.ico</ApplicationIcon>
+    <!-- Screen capture (GDI BitBlt) and SendInput absolute coordinates both work in
+         PHYSICAL pixels. Without per-monitor v2 awareness Windows virtualizes them,
+         so on a mixed-DPI multi-monitor desktop the captured bitmap and the reported
+         capture size disagree and the captured image comes back torn. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
+    <!-- Media Foundation interop for the H.264 screen encoder (screen streaming).
+         Pinned to the 3.8.x line which targets .NET 8. -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
   </ItemGroup>
 
 </Project>

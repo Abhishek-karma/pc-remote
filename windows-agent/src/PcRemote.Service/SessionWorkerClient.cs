@@ -57,7 +57,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
         var path = Path.Combine(AppContext.BaseDirectory, "PCRemoteSession.exe");
         if (!File.Exists(path))
         {
-            Console.WriteLine("[!] Session helper missing: " + path);
+            AgentLog.Error("Session helper missing: " + path);
             return null;
         }
         return TryLaunch(path, secure, sessionId);
@@ -71,7 +71,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
         {
             if (!File.Exists(exePath))
             {
-                Console.WriteLine("[!] Session helper missing: " + exePath);
+                AgentLog.Error("Session helper missing: " + exePath);
                 return null;
             }
 
@@ -85,7 +85,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
                 : QueryUserToken(sessionId);
             if (token is null)
             {
-                Console.WriteLine($"[!] Could not obtain {(secure ? "SYSTEM" : "user")} token for session {sessionId}");
+                AgentLog.Error($"Could not obtain {(secure ? "SYSTEM" : "user")} token for session {sessionId}");
                 return null;
             }
 
@@ -102,7 +102,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
                         NativeMethods.CREATE_NO_WINDOW | NativeMethods.CREATE_UNICODE_ENVIRONMENT,
                         envBlock, null, ref si, out psi))
                 {
-                    Console.WriteLine($"[!] CreateProcessAsUser({Path.GetFileName(exePath)}) failed: {Marshal.GetLastWin32Error()}");
+                    AgentLog.Error($"CreateProcessAsUser({Path.GetFileName(exePath)}) failed: {Marshal.GetLastWin32Error()}");
                     return null;
                 }
                 CloseHandle(psi.hThread);
@@ -118,7 +118,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Launching session helper failed: {ex.Message}");
+            AgentLog.Error($"Launching session helper failed: {ex.Message}");
             return null;
         }
     }
@@ -195,6 +195,9 @@ public sealed class SessionWorkerClient : ISessionInputPath
     public Task<bool> MouseMoveRelative(int dx, int dy) =>
         SendInputCommandAsync("mouse_move", new RemoteMessage { Type = "mouse_move", Dx = dx, Dy = dy });
 
+    public Task<bool> MouseMoveAbsolute(int x, int y) =>
+        SendInputCommandAsync("mouse_move_abs", new RemoteMessage { Type = "mouse_move_abs", X = x, Y = y });
+
     public Task<bool> MouseClick(string button, string action) =>
         SendInputCommandAsync("mouse_click", new RemoteMessage { Type = "mouse_click", Button = button, Action = action });
 
@@ -213,6 +216,73 @@ public sealed class SessionWorkerClient : ISessionInputPath
     public Task<bool> ReleaseAll() =>
         SendInputCommandAsync("release_all", new RemoteMessage { Type = "release_all" });
 
+    // ------------------------------------------------------------------
+    // Streaming control: drive the agent's VideoStreamer over the session
+    // pipe. Only the NORMAL helper streams — the service calls these on its
+    // session worker (secure: false); a secure helper refuses by design.
+    // ------------------------------------------------------------------
+
+    /// <summary>Starts capture+encode in the agent. Returns the fMP4 file to tail
+    /// plus the negotiated dimensions, or null when unavailable (no desktop).</summary>
+    public StreamBinding? StartStream(int fps, int bitrate)
+    {
+        var reply = SendStreamCommand("stream_start",
+            System.Text.Json.JsonSerializer.SerializeToElement(new StreamStartRequest { Fps = fps, Bitrate = bitrate }));
+        if (reply is not { Ok: true } || reply.Payload is not { } payload) return null;
+        try
+        {
+            var info = System.Text.Json.JsonSerializer.Deserialize<StreamBindingInfo>(payload);
+            if (info is null || string.IsNullOrEmpty(info.Path)) return null;
+            return new StreamBinding(info.Path, info.Width, info.Height, info.Fps);
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Warn($"stream_start reply parse failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    public bool StopStream()
+    {
+        var reply = SendStreamCommand("stream_stop", null);
+        return reply is { Ok: true };
+    }
+
+    public bool RequestStreamKeyframe()
+    {
+        var reply = SendStreamCommand("stream_keyframe", null);
+        return reply is { Ok: true };
+    }
+
+    /// <summary>Runtime FPS adjustment (congestion adaptation) on the agent encoder.</summary>
+    public bool SetStreamFps(int fps)
+    {
+        var reply = SendStreamCommand("stream_fps",
+            System.Text.Json.JsonSerializer.SerializeToElement(new StreamFpsRequest { Fps = fps }));
+        return reply is { Ok: true };
+    }
+
+    private IpcMessage? SendStreamCommand(string type, System.Text.Json.JsonElement? payload)
+    {
+        try
+        {
+            using var client = new IpcClient(IpcEndpoints.SessionPipe(_sessionId, _secure));
+            client.Connect(2000);
+            return client.RoundTrip(new IpcMessage
+            {
+                Type = type,
+                Role = _secure ? "secure" : "session",
+                SessionId = _sessionId,
+                Payload = payload,
+            }, 4000);
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Debug($"stream IPC {type} to session {_sessionId} failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
     private async Task<bool> SendInputCommandAsync(string command, RemoteMessage payload)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -227,7 +297,7 @@ public sealed class SessionWorkerClient : ISessionInputPath
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[!] Relay connect to session {_sessionId} timed out after {sw.ElapsedMilliseconds} ms ({ex.GetType().Name}) - helper pipe not listening?");
+                AgentLog.Debug($"Relay connect to session {_sessionId} timed out after {sw.ElapsedMilliseconds} ms ({ex.GetType().Name}) - helper pipe not listening?");
                 return false;
             }
             var reply = client.RoundTrip(new IpcMessage
@@ -239,12 +309,12 @@ public sealed class SessionWorkerClient : ISessionInputPath
             }, 2000);
             // Only surface slow relays — every mouse_move would flood the log.
             if (sw.ElapsedMilliseconds > 50)
-                Console.WriteLine($"[relay] {command} ok={(reply?.Ok == true)} in {sw.ElapsedMilliseconds} ms");
+                AgentLog.Debug($"{command} ok={(reply?.Ok == true)} in {sw.ElapsedMilliseconds} ms");
             return reply?.Ok == true;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Input relay to session {_sessionId} ({command}) failed after {sw.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
+            AgentLog.Warn($"Input relay to session {_sessionId} ({command}) failed after {sw.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }

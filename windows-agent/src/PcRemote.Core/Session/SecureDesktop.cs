@@ -112,5 +112,5 @@ public static class SecureDesktop
             : null;
     }
 
-    private static void Log(string message) => Console.WriteLine($"[secure-desktop] {message}");
+    private static void Log(string message) => AgentLog.Warn($"SecureDesktop: {message}");
 }

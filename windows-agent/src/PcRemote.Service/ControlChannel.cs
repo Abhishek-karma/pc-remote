@@ -17,18 +17,42 @@ public sealed class ControlChannel
     public const int MaxTotalConnections = 10;
     public const int MaxConnectionsPerIp = 3;
 
+    // Screen-stream defaults (adaptive tuning lands with the UX phase).
+    public const int DefaultStreamFps = 15;
+    public const int DefaultStreamBitrate = 4_000_000;
+
+    /// <summary>Test seam: when set, stream_start binds to the returned file instead
+    /// of driving the real session agent, so loopback tests can tail a temp fMP4.</summary>
+    internal Func<StreamBinding?>? StreamBinderOverride { get; set; }
+
     private readonly PairingStore _pairing;
     private readonly string _pcId;
     private readonly InputRouter _inputRouter;
     private readonly SessionManager _sessionManager;
-    private readonly ConcurrentDictionary<string, DateTime> _connected = new();
+    private readonly ConcurrentDictionary<string, ConnectionSlot> _connected = new();
     private TcpListener? _listener;
     private readonly X509Certificate2? _certOverride;
 
     public event Action<int>? ConnectedCountChanged;
     public event Action<string>? PairingCodeChanged;
 
-    public int ConnectedCount { get { lock (_connected) return _connected.Count; } }
+    /// <summary>Request path that selects the binary media channel on this port.</summary>
+    public const string StreamPath = "/stream";
+
+    /// <summary>A live connection slot. Stream (media) sockets count toward the
+    /// per-IP/total connection limits but not toward the visible device count.</summary>
+    private sealed record ConnectionSlot(DateTime LastSeen, bool Stream);
+
+    public int ConnectedCount
+    {
+        get { lock (_connected) return _connected.Values.Count(s => !s.Stream); }
+    }
+
+    /// <summary>Live media sockets (diagnostics: how many clients are watching).</summary>
+    public int StreamingCount
+    {
+        get { lock (_connected) return _connected.Values.Count(s => s.Stream); }
+    }
 
     public ControlChannel(PairingStore pairing, string pcId, InputRouter inputRouter, SessionManager sessionManager,
         X509Certificate2? certificate = null)
@@ -75,10 +99,10 @@ public sealed class ControlChannel
                     List<string> stale;
                     lock (_connected)
                     {
-                        stale = _connected.Where(kv => kv.Value < threshold).Select(kv => kv.Key).ToList();
+                        stale = _connected.Where(kv => kv.Value.LastSeen < threshold).Select(kv => kv.Key).ToList();
                         foreach (var key in stale) _connected.TryRemove(key, out _);
                     }
-                    if (stale.Count > 0) Console.WriteLine($"[~] Cleaned up {stale.Count} stale connection slot(s)");
+                    if (stale.Count > 0) AgentLog.Debug($"Cleaned up {stale.Count} stale connection slot(s)");
                 }
             }
             catch (OperationCanceledException) { }
@@ -100,7 +124,7 @@ public sealed class ControlChannel
             _listener.Server.ExclusiveAddressUse = true;
             _listener.Start();
         }
-        Console.WriteLine($"[+] WSS control channel listening on port {Port}");
+        AgentLog.Info($"WSS control channel listening on port {Port}");
 
         while (!ct.IsCancellationRequested)
         {
@@ -123,8 +147,20 @@ public sealed class ControlChannel
             var currentTotal = _connected.Count;
             var currentIpCount = _connected.Keys.Count(k => k.StartsWith(clientIp + ":", StringComparison.Ordinal));
             if (currentTotal >= MaxTotalConnections || currentIpCount >= MaxConnectionsPerIp) return false;
-            _connected[connKey] = DateTime.UtcNow;
+            _connected[connKey] = new ConnectionSlot(DateTime.UtcNow, Stream: false);
             return true;
+        }
+    }
+
+    /// <summary>Reclassifies a slot as a media socket once the upgrade path is
+    /// known (the path is only readable after the TLS/WS handshake, which happens
+    /// after the slot is acquired to bound pre-auth connections).</summary>
+    private void MarkAsStream(string connKey)
+    {
+        lock (_connected)
+        {
+            if (_connected.TryGetValue(connKey, out var slot))
+                _connected[connKey] = slot with { Stream = true };
         }
     }
 
@@ -136,7 +172,8 @@ public sealed class ControlChannel
     {
         lock (_connected)
         {
-            if (_connected.ContainsKey(connKey)) _connected[connKey] = DateTime.UtcNow;
+            if (_connected.TryGetValue(connKey, out var slot))
+                _connected[connKey] = slot with { LastSeen = DateTime.UtcNow };
         }
     }
 
@@ -145,76 +182,179 @@ public sealed class ControlChannel
         var clientIp = client.Client.RemoteEndPoint is IPEndPoint ep ? ep.Address.ToString() : "unknown";
         if (!TryAcquireConnectionSlot(clientIp, out var connKey))
         {
-            Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded");
+            AgentLog.Warn($"{clientIp} rejected: connection limit exceeded");
             client.Dispose();
             return;
         }
 
+        var isStream = false;
         try
         {
             var cert = _certOverride ?? ControlChannelCert.Value;
             using var socket = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: true);
             if (socket is null)
             {
-                Console.WriteLine($"[!] {clientIp} rejected (handshake failed)");
+                AgentLog.Warn($"{clientIp} rejected (TLS handshake failed)");
                 return;
             }
 
-            Console.WriteLine($"[+] Connection from {clientIp} (TLS)");
+            // The request path decides the connection's role: "/stream" is the
+            // binary media channel (video only), anything else is the JSON control
+            // surface. Same TLS listener + cert, so no new port and the same pin.
+            isStream = string.Equals(socket.RequestPath, StreamPath, StringComparison.Ordinal);
+            if (isStream) MarkAsStream(connKey);
+
+            AgentLog.Info($"Connection from {clientIp} (TLS, path={socket.RequestPath ?? "/"})");
             PrintConnectedCount();
 
-            var authenticated = false;
-            var authDeadline = DateTime.UtcNow.AddSeconds(15);
-            var messageCount = 0;
-            var windowStart = DateTime.UtcNow;
-            var muteUntil = DateTime.MinValue;
+            if (isStream)
+                await HandleStreamConnectionAsync(socket, clientIp, connKey, ct);
+            else
+                await HandleControlConnectionAsync(socket, clientIp, connKey, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AgentLog.Error($"Connection error from {clientIp}: {ex.Message}");
+        }
+        finally
+        {
+            _connected.TryRemove(connKey, out _);
+            if (!isStream)
+            {
+                // Never leave the PC with a mouse button held down.
+                await _inputRouter.ReleaseAllButtons();
+            }
+            AgentLog.Info($"{clientIp} disconnected");
+            PrintConnectedCount();
+            client.Dispose();
+        }
+    }
 
+    /// <summary>JSON control socket: the existing authenticated command path.</summary>
+    private async Task HandleControlConnectionAsync(WebSocketConnection socket, string clientIp, string connKey, CancellationToken ct)
+    {
+        var authenticated = false;
+        var authDeadline = DateTime.UtcNow.AddSeconds(15);
+        var messageCount = 0;
+        var windowStart = DateTime.UtcNow;
+        var muteUntil = DateTime.MinValue;
+
+        while (!ct.IsCancellationRequested)
+        {
+            if (!authenticated && DateTime.UtcNow > authDeadline)
+            {
+                AgentLog.Warn($"{clientIp} disconnected (authentication timeout)");
+                break;
+            }
+
+            var text = await socket.ReceiveTextAsync();
+            if (text is null) break;
+
+            // Any traffic proves the connection is alive; keep its slot.
+            TouchConnectionSlot(connKey);
+
+            var now = DateTime.UtcNow;
+            if ((now - windowStart).TotalSeconds >= 1.0)
+            {
+                messageCount = 0;
+                windowStart = now;
+            }
+            messageCount++;
+            if (messageCount > 150)
+            {
+                muteUntil = now.AddSeconds(1);
+                messageCount = 0;
+                windowStart = now.AddSeconds(1);
+            }
+            if (DateTime.UtcNow < muteUntil) continue;
+
+            RemoteMessage? msg;
+            try
+            {
+                msg = JsonSerializer.Deserialize<RemoteMessage>(text);
+            }
+            catch
+            {
+                await SendErrorAsync(socket, null, "invalid_json");
+                continue;
+            }
+            if (msg is null) continue;
+
+            if (msg.Version != 1)
+            {
+                await SendErrorAsync(socket, msg.RequestId, "unsupported_version");
+                continue;
+            }
+
+            if (!authenticated)
+            {
+                authenticated = await HandleAuthAsync(socket, msg, clientIp, connKey);
+                continue;
+            }
+
+            if (msg.Type == "system_power" && msg.Action is "shutdown" or "restart")
+            {
+                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                {
+                    Version = 1, RequestId = msg.RequestId, Type = "disconnecting", Reason = msg.Action
+                }));
+            }
+
+            await HandleCommandAsync(socket, msg);
+        }
+    }
+
+    /// <summary>Media socket: authenticated binary channel carrying encoded video
+    /// bytes from the agent's stream to one client. Carries no input command
+    /// surface — the connection is the /stream path, so it cannot be confused with
+    /// the control socket, and anything that is not stream lifecycle / keyframe is
+    /// rejected.</summary>
+    private async Task HandleStreamConnectionAsync(WebSocketConnection socket, string clientIp, string connKey, CancellationToken ct)
+    {
+        var authenticated = false;
+        var authDeadline = DateTime.UtcNow.AddSeconds(15);
+        CancellationTokenSource? forwarderCts = null;
+        Task? forwarderTask = null;
+        SessionWorkerClient? streamWorker = null;
+        FpsPolicy? fpsPolicy = null;
+
+        async Task StopStreamingAsync()
+        {
+            if (forwarderCts is not null)
+            {
+                forwarderCts.Cancel();
+                try { if (forwarderTask is not null) await forwarderTask; } catch { }
+                forwarderCts.Dispose();
+                forwarderCts = null;
+                forwarderTask = null;
+            }
+            if (streamWorker is not null)
+            {
+                try { streamWorker.StopStream(); } catch { }
+                streamWorker = null;
+            }
+        }
+
+        try
+        {
             while (!ct.IsCancellationRequested)
             {
                 if (!authenticated && DateTime.UtcNow > authDeadline)
                 {
-                    Console.WriteLine($"[!] {clientIp} disconnected (authentication timeout)");
+                    AgentLog.Warn($"{clientIp} stream socket disconnected (authentication timeout)");
                     break;
                 }
 
                 var text = await socket.ReceiveTextAsync();
                 if (text is null) break;
 
-                // Any traffic proves the connection is alive; keep its slot.
                 TouchConnectionSlot(connKey);
 
-                var now = DateTime.UtcNow;
-                if ((now - windowStart).TotalSeconds >= 1.0)
-                {
-                    messageCount = 0;
-                    windowStart = now;
-                }
-                messageCount++;
-                if (messageCount > 150)
-                {
-                    muteUntil = now.AddSeconds(1);
-                    messageCount = 0;
-                    windowStart = now.AddSeconds(1);
-                }
-                if (DateTime.UtcNow < muteUntil) continue;
-
                 RemoteMessage? msg;
-                try
-                {
-                    msg = JsonSerializer.Deserialize<RemoteMessage>(text);
-                }
-                catch
-                {
-                    await SendErrorAsync(socket, null, "invalid_json");
-                    continue;
-                }
-                if (msg is null) continue;
-
-                if (msg.Version != 1)
-                {
-                    await SendErrorAsync(socket, msg.RequestId, "unsupported_version");
-                    continue;
-                }
+                try { msg = JsonSerializer.Deserialize<RemoteMessage>(text); }
+                catch { continue; }
+                if (msg is null || msg.Version != 1) continue;
 
                 if (!authenticated)
                 {
@@ -222,31 +362,117 @@ public sealed class ControlChannel
                     continue;
                 }
 
-                if (msg.Type == "system_power" && msg.Action is "shutdown" or "restart")
+                switch (msg.Type)
                 {
-                    await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                    case "stream_start":
                     {
-                        Version = 1, RequestId = msg.RequestId, Type = "disconnecting", Reason = msg.Action
-                    }));
-                }
+                        if (forwarderCts is not null)
+                        {
+                            await SendErrorAsync(socket, msg.RequestId, "already_streaming");
+                            break;
+                        }
 
-                await HandleCommandAsync(socket, msg);
+                        var (binding, worker) = ResolveStreamBinding();
+                        if (binding is null)
+                        {
+                            // Honest failure state: no interactive desktop or no
+                            // agent to capture with — never pretend video is coming.
+                            AgentLog.Warn($"{clientIp} stream unavailable (no user session or desktop)");
+                            await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                            {
+                                Version = 1, RequestId = msg.RequestId, Type = "stream_state",
+                                StreamState = "error", ErrorCode = "stream_unavailable",
+                            }));
+                            break;
+                        }
+
+                        AgentLog.Info($"{clientIp} streaming {binding.Value.Width}x{binding.Value.Height}@{binding.Value.Fps}");
+                        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                        {
+                            Version = 1, RequestId = msg.RequestId, Type = "stream_state",
+                            StreamState = "active",
+                            Width = binding.Value.Width, Height = binding.Value.Height, Fps = binding.Value.Fps,
+                        }));
+
+                        // Forwarder must be started only after the state reply so
+                        // the client sees metadata before the first video bytes.
+                        streamWorker = worker;
+                        var forwardedWorker = worker;
+                        fpsPolicy = new FpsPolicy(binding.Value.Fps);
+                        forwarderCts = new CancellationTokenSource();
+                        var forwarder = new StreamForwarder(
+                            binding.Value.Path,
+                            frame => socket.SendBinaryAsync(frame.ToBytes()),
+                            onDropped: () => Task.Run(() =>
+                            {
+                                try
+                                {
+                                    forwardedWorker?.RequestStreamKeyframe();
+                                    var newFps = fpsPolicy.OnCongestion(DateTime.UtcNow);
+                                    AgentLog.Info($"stream congestion: FPS adapted to {newFps}");
+                                    forwardedWorker?.SetStreamFps(newFps);
+                                }
+                                catch { }
+                            }),
+                            onHealthy: () => Task.Run(() =>
+                            {
+                                try
+                                {
+                                    var newFps = fpsPolicy.OnHealthyTick(DateTime.UtcNow);
+                                    if (newFps is int fps)
+                                    {
+                                        AgentLog.Info($"stream recovered: FPS adapted to {fps}");
+                                        forwardedWorker?.SetStreamFps(fps);
+                                    }
+                                }
+                                catch { }
+                            }));
+                        forwarderTask = Task.Run(() => forwarder.RunAsync(forwarderCts.Token), CancellationToken.None);
+                        break;
+                    }
+
+                    case "keyframe_request":
+                        // Relay to the agent encoder for an IDR (join / loss recovery).
+                        try { streamWorker?.RequestStreamKeyframe(); } catch { }
+                        break;
+
+                    case "stream_stop":
+                        AgentLog.Info($"{clientIp} requested stream stop");
+                        await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                        {
+                            Version = 1, RequestId = msg.RequestId, Type = "stream_state",
+                            StreamState = "stopped",
+                        }));
+                        await StopStreamingAsync();
+                        // Complete the close handshake before the socket is disposed,
+                        // so the client sees a clean end instead of a RST.
+                        await socket.CloseAsync();
+                        return;
+
+                    default:
+                        // The media socket has no command surface; input must come
+                        // from the control socket to the same device.
+                        await SendErrorAsync(socket, msg.RequestId, "unknown_type");
+                        break;
+                }
             }
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[!] Connection error from {clientIp}: {ex.Message}");
         }
         finally
         {
-            _connected.TryRemove(connKey, out _);
-            // Never leave the PC with a mouse button held down.
-            await _inputRouter.ReleaseAllButtons();
-            Console.WriteLine($"[-] {clientIp} disconnected");
-            PrintConnectedCount();
-            client.Dispose();
+            // Client vanished mid-stream: never leave the agent encoding for nobody.
+            await StopStreamingAsync();
         }
+    }
+
+    /// <summary>Bind this media socket to a live stream: ask the user-session agent
+    /// to start capture+encode and return the fMP4 file to tail. Null = unavailable.</summary>
+    private (StreamBinding? Binding, SessionWorkerClient? Worker) ResolveStreamBinding()
+    {
+        if (StreamBinderOverride is not null) return (StreamBinderOverride(), null);
+
+        var worker = _sessionManager.GetSessionWorker() as SessionWorkerClient;
+        if (worker is not { IsAlive: true }) return (null, worker);
+        return (worker.StartStream(DefaultStreamFps, DefaultStreamBitrate), worker);
     }
 
     private async Task<bool> HandleAuthAsync(WebSocketConnection socket, RemoteMessage msg, string clientIp, string connKey)
@@ -259,7 +485,7 @@ public sealed class ControlChannel
 
         if (_pairing.IsIpLockedOut(clientIp))
         {
-            Console.WriteLine($"[!] {clientIp} authentication blocked (locked out)");
+            AgentLog.Warn($"{clientIp} authentication blocked (locked out)");
             await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
             {
                 Version = 1, RequestId = msg.RequestId, Type = "auth_failed", ErrorCode = "rate_limited"
@@ -281,11 +507,11 @@ public sealed class ControlChannel
                 SessionState = _sessionManager.CurrentState.ToString().ToLowerInvariant(),
                 ConnKey = connKey
             }));
-            Console.WriteLine($"[+] {clientIp} authenticated");
+            AgentLog.Info($"{clientIp} authenticated");
             return true;
         }
 
-        Console.WriteLine($"[!] {clientIp} authentication failed");
+        AgentLog.Warn($"{clientIp} authentication failed");
         await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
         {
             Version = 1, RequestId = msg.RequestId, Type = "auth_failed", ErrorCode = "invalid_credentials"
@@ -299,7 +525,7 @@ public sealed class ControlChannel
     {
         if (!CommandAllowlist.IsAllowed(msg.Type))
         {
-            Console.WriteLine($"[?] Rejected message type: {msg.Type}");
+            AgentLog.Warn($"Rejected message type: {msg.Type}");
             await SendErrorAsync(socket, msg.RequestId, "unknown_type");
             return;
         }
@@ -312,6 +538,17 @@ public sealed class ControlChannel
                     if (!await _inputRouter.MouseMoveRelative(
                             Math.Clamp(msg.Dx ?? 0, -4096, 4096),
                             Math.Clamp(msg.Dy ?? 0, -4096, 4096)))
+                    {
+                        await SendErrorAsync(socket, msg.RequestId, "input_unavailable");
+                        return;
+                    }
+                    await SendAckAsync(socket, msg.RequestId);
+                    break;
+
+                case "mouse_move_abs":
+                    if (!await _inputRouter.MouseMoveAbsolute(
+                            Math.Clamp(msg.X ?? 0, 0, 1_000_000),
+                            Math.Clamp(msg.Y ?? 0, 0, 1_000_000)))
                     {
                         await SendErrorAsync(socket, msg.RequestId, "input_unavailable");
                         return;
@@ -423,8 +660,8 @@ public sealed class ControlChannel
 
     private void PrintConnectedCount()
     {
-        var devices = _connected.Count;
-        Console.WriteLine($"     {devices} device(s) connected");
+        var devices = ConnectedCount; // stream (media) sockets are not devices
+        AgentLog.Info($"{devices} device(s) connected");
         ConnectedCountChanged?.Invoke(devices);
     }
 

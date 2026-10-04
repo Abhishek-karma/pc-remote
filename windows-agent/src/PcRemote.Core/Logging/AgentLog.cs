@@ -19,6 +19,27 @@ public static class AgentLog
 
     private static string LogDir { get; set; } = "";
 
+    // Process-level component label ("service", "session", "secure", "tray").
+    // Set once at startup by each process entry point; Core logging shares it.
+    private static string _subsystem = "";
+
+    /// <summary>Labels every leveled log line from this process with a coarse
+    /// component name. The fine-grained marker (if any) stays in the message.</summary>
+    public static void SetSubsystem(string subsystem) => _subsystem = subsystem;
+
+    /// <summary>Leveled log. Each call is one line: "HH:mm:ss [LEVEL] [subsystem] message".
+    /// Mirrored to the rotating log file like all Console output.</summary>
+    public static void Info(string message) => Write("INFO", message);
+    public static void Warn(string message) => Write("WARN", message);
+    public static void Error(string message) => Write("ERROR", message);
+    public static void Debug(string message) => Write("DEBUG", message);
+
+    private static void Write(string level, string message)
+    {
+        var sub = string.IsNullOrEmpty(_subsystem) ? "" : $" [{_subsystem}]";
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [{level}]{sub} {message}");
+    }
+
     /// <summary>Redirects Console output to console + log file. Never throws —
     /// on failure the component keeps console-only logging.</summary>
     public static void Init(string logDir)

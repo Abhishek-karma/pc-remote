@@ -68,7 +68,7 @@ public sealed class SessionManager : IDisposable
         };
         _messageThread.SetApartmentState(ApartmentState.STA);
         _messageThread.Start();
-        Console.WriteLine($"[+] SessionManager started (console session {_consoleSessionId})");
+        AgentLog.Info($"SessionManager started (console session {_consoleSessionId})");
     }
 
     public void Stop()
@@ -124,7 +124,7 @@ public sealed class SessionManager : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] SessionManager loop died: {ex.Message}");
+            AgentLog.Error($"SessionManager loop died: {ex.Message}");
         }
     }
 
@@ -186,7 +186,7 @@ public sealed class SessionManager : IDisposable
             var newState = DetectState();
             if (newState != CurrentState)
             {
-                Console.WriteLine($"[~] Desktop state: {CurrentState} -> {newState}");
+                AgentLog.Info($"Desktop state: {CurrentState} -> {newState}");
                 _currentState = newState;
                 // Opportunistically (re)spawn helpers for the new reality.
                 switch (newState)
@@ -311,7 +311,7 @@ public sealed class SessionManager : IDisposable
         if (client is not null)
         {
             _sessionWorker = client;
-            Console.WriteLine($"[+] Session helper running in session {sessionId}");
+            AgentLog.Info($"Session helper running in session {sessionId}");
         }
 
         EnsureSecureHelper(sessionId);
@@ -335,9 +335,9 @@ public sealed class SessionManager : IDisposable
         if (sessionId == 0) return null;
         var client = SessionWorkerClient.LaunchAsUser(sessionId, secure: true);
         if (client is not null)
-            Console.WriteLine($"[+] Secure input helper running in session {sessionId}");
+            AgentLog.Info($"Secure input helper running in session {sessionId}");
         else
-            Console.WriteLine($"[!] Secure input helper could not start in session {sessionId} (no SYSTEM token? not LocalSystem?)");
+            AgentLog.Warn($"Secure input helper could not start in session {sessionId} (no SYSTEM token? not LocalSystem?)");
         return client;
     }
 

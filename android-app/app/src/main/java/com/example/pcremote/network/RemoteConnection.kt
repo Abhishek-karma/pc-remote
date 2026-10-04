@@ -50,7 +50,14 @@ data class RemoteMessage(
     val pcName: String? = null,
     val success: Boolean? = null,
     val errorCode: String? = null,
-    val connKey: String? = null
+    val connKey: String? = null,
+    // v1 streaming fields (additive; server ignores unknowns on its side too).
+    val streamState: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val fps: Int? = null,
+    val x: Int? = null,
+    val y: Int? = null
 )
 
 /**
@@ -316,6 +323,11 @@ class RemoteConnection(
 
     fun sendMouseMove(dx: Int, dy: Int) =
         sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_move", dx = dx, dy = dy))
+
+    /** Absolute desktop position (remote-desktop view): the agent maps it via
+     * SendInput's normalized virtual-desktop space. */
+    fun sendMouseAbs(x: Int, y: Int) =
+        sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_move_abs", x = x, y = y))
 
     fun sendMouseClick(button: String = "left", action: String = "click") =
         sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "mouse_click", button = button, action = action))

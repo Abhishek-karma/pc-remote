@@ -23,6 +23,11 @@ public class WebSocketConnection : IDisposable
         _stream = stream;
     }
 
+    /// <summary>Request target from the upgrade line (e.g. "/" or "/stream").
+    /// Set only after a valid upgrade; null when unknown. Used to split the
+    /// JSON control surface from the binary media channel on the same port.</summary>
+    public string? RequestPath { get; private set; }
+
     public static async Task<WebSocketConnection?> AcceptAsync(
         Stream rawStream,
         X509Certificate2 serverCertificate,
@@ -40,7 +45,7 @@ public class WebSocketConnection : IDisposable
                 await ssl.AuthenticateAsServerAsync(serverCertificate).WaitAsync(cts.Token);
             }
 
-            var headers = await ReadUpgradeRequestAsync(stream, cts.Token);
+            var (headers, path) = await ReadUpgradeRequestAsync(stream, cts.Token);
             if (headers is null ||
                 !headers.TryGetValue("sec-websocket-key", out var key) ||
                 string.IsNullOrWhiteSpace(key) ||
@@ -51,7 +56,7 @@ public class WebSocketConnection : IDisposable
             }
 
             await SendUpgradeResponseAsync(stream, key, cts.Token);
-            return new WebSocketConnection(stream);
+            return new WebSocketConnection(stream) { RequestPath = path };
         }
         catch
         {
@@ -59,22 +64,24 @@ public class WebSocketConnection : IDisposable
         }
     }
 
-    private static async Task<Dictionary<string, string>?> ReadUpgradeRequestAsync(Stream stream, CancellationToken ct)
+    private static async Task<(Dictionary<string, string>? Headers, string? Path)> ReadUpgradeRequestAsync(Stream stream, CancellationToken ct)
     {
         var buffer = new byte[8192];
         var offset = 0;
         while (offset < buffer.Length)
         {
             var n = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), ct);
-            if (n == 0) return null;
+            if (n == 0) return (null, null);
             offset += n;
             if (Array.IndexOf(buffer, (byte)'\n', 0, offset) >= 0 &&
                 HasHeaderTerminator(buffer, offset)) break;
         }
 
         var text = Encoding.ASCII.GetString(buffer, 0, offset);
-        if (!text.StartsWith("GET ", StringComparison.Ordinal)) return null;
-        if (!text.Contains("Upgrade: websocket", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!text.StartsWith("GET ", StringComparison.Ordinal)) return (null, null);
+        if (!text.Contains("Upgrade: websocket", StringComparison.OrdinalIgnoreCase)) return (null, null);
+
+        var requestPath = ExtractRequestPath(text);
 
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in text.Split("\r\n"))
@@ -83,7 +90,16 @@ public class WebSocketConnection : IDisposable
             if (colon > 0)
                 headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
         }
-        return headers;
+        return (headers, requestPath);
+    }
+
+    /// <summary>Target path from the request line: "GET /stream HTTP/1.1" → "/stream".</summary>
+    private static string? ExtractRequestPath(string text)
+    {
+        var endOfLine = text.IndexOf("\r\n", StringComparison.Ordinal);
+        var firstLine = endOfLine > 0 ? text[..endOfLine] : text;
+        var parts = firstLine.Split(' ');
+        return parts.Length >= 2 ? parts[1] : null;
     }
 
     private static bool HasHeaderTerminator(byte[] buffer, int length) =>
@@ -131,7 +147,7 @@ public class WebSocketConnection : IDisposable
                     case 0xA:
                         continue;
                     default:
-                        Console.WriteLine($"[!] Unexpected opcode 0x{opcode:X} outside a message");
+                        AgentLog.Warn($"Unexpected opcode 0x{opcode:X} outside a message");
                         return null;
                 }
             }
@@ -146,13 +162,13 @@ public class WebSocketConnection : IDisposable
             {
                 // A new data frame while a fragmented message is open is a
                 // protocol error.
-                Console.WriteLine("[!] New data frame before the previous message was finished");
+                AgentLog.Warn("New data frame before the previous message was finished");
                 return null;
             }
 
             if (message.Length + payload.Length > MaxPayloadSize)
             {
-                Console.WriteLine("[!] Fragmented message exceeds the maximum payload limit");
+                AgentLog.Warn("Fragmented message exceeds the maximum payload limit");
                 return null;
             }
             message.Write(payload, 0, payload.Length);
@@ -169,7 +185,7 @@ public class WebSocketConnection : IDisposable
             }
             catch (DecoderFallbackException)
             {
-                Console.WriteLine("[!] Received invalid UTF-8 payload in text message");
+                AgentLog.Warn("Received invalid UTF-8 payload in text message");
                 return null;
             }
         }
@@ -185,14 +201,14 @@ public class WebSocketConnection : IDisposable
         int rsv = finAndRsv & 0x70;
         if (rsv != 0)
         {
-            Console.WriteLine("[!] RFC 6455 violation: RSV bits must be 0");
+            AgentLog.Warn("RFC 6455 violation: RSV bits must be 0");
             return null;
         }
 
         byte opcode = (byte)(finAndRsv & 0x0F);
         if (opcode is not (0x1 or 0x8 or 0x9 or 0xA))
         {
-            Console.WriteLine($"[!] RFC 6455 violation: Unsupported opcode 0x{opcode:X}");
+            AgentLog.Warn($"RFC 6455 violation: Unsupported opcode 0x{opcode:X}");
             return null;
         }
 
@@ -201,27 +217,27 @@ public class WebSocketConnection : IDisposable
         {
             if (!fin)
             {
-                Console.WriteLine("[!] RFC 6455 violation: Control frame must not be fragmented");
+                AgentLog.Warn("RFC 6455 violation: Control frame must not be fragmented");
                 return null;
             }
         }
         else if (!fin)
         {
-            Console.WriteLine("[!] RFC 6455 violation: Fragmented data frames are not supported");
+            AgentLog.Warn("RFC 6455 violation: Fragmented data frames are not supported");
             return null;
         }
 
         bool masked = (header[1] & 0x80) != 0;
         if (!masked)
         {
-            Console.WriteLine("[!] RFC 6455 violation: Client sent unmasked frame");
+            AgentLog.Warn("RFC 6455 violation: Client sent unmasked frame");
             return null;
         }
 
         ulong length = (ulong)(header[1] & 0x7F);
         if (isControlFrame && length > 125)
         {
-            Console.WriteLine($"[!] RFC 6455 violation: Control frame payload length ({length}) > 125");
+            AgentLog.Warn($"RFC 6455 violation: Control frame payload length ({length}) exceeds maximum limit ({MaxPayloadSize})");
             return null;
         }
 
@@ -241,7 +257,7 @@ public class WebSocketConnection : IDisposable
 
         if (length > MaxPayloadSize)
         {
-            Console.WriteLine($"[!] WebSocket frame payload length ({length}) exceeds maximum limit ({MaxPayloadSize})");
+            AgentLog.Warn($"WebSocket frame payload length ({length}) exceeds maximum limit ({MaxPayloadSize})");
             return null;
         }
 
@@ -284,6 +300,40 @@ public class WebSocketConnection : IDisposable
 
     public Task SendTextAsync(string text) =>
         SendFrameAsync(0x1, Encoding.UTF8.GetBytes(text));
+
+    /// <summary>Binary push (opcode 0x2) used by the media channel to transmit
+    /// encoded video frames to the client. Frames are pre-framed by the caller
+    /// (see MediaFrame); this only writes the RFC 6455 binary frame.</summary>
+    public Task SendBinaryAsync(byte[] payload) =>
+        SendFrameAsync(0x2, payload);
+
+    /// <summary>Server-initiated close: sends a close frame and COMPLETES the
+    /// handshake by draining until the peer's close arrives (bounded, so a dead
+    /// peer cannot hang the caller). Disposing the socket right after sending the
+    /// close frame races the peer's final reads and surfaces as a RST.</summary>
+    public async Task CloseAsync(ushort code = 1000, string reason = "")
+    {
+        var payload = new byte[2 + Encoding.UTF8.GetByteCount(reason)];
+        BinaryPrimitives.WriteUInt16BigEndian(payload, code);
+        if (reason.Length > 0) Encoding.UTF8.GetBytes(reason, payload.AsSpan(2));
+        try { await SendFrameAsync(0x8, payload); }
+        catch { return; }
+
+        using var drain = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (true)
+            {
+                var frame = await ReadFrameAsync().WaitAsync(drain.Token);
+                if (frame is null) return;
+                if (frame.Value.opcode == 0x8) return; // peer's close: handshake complete
+            }
+        }
+        catch
+        {
+            // Timeout or transport error: teardown proceeds regardless.
+        }
+    }
 
     private async Task SendFrameAsync(byte opcode, byte[] payload)
     {

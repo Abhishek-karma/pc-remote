@@ -56,6 +56,9 @@ public sealed class InputRouter
     public Task<bool> MouseMoveRelative(int dx, int dy) =>
         ResolvePath().MouseMoveRelative(dx, dy);
 
+    public Task<bool> MouseMoveAbsolute(int x, int y) =>
+        ResolvePath().MouseMoveAbsolute(x, y);
+
     public Task<bool> MouseClick(string button, string action) =>
         ResolvePath().MouseClick(button, action);
 
@@ -85,14 +88,14 @@ public sealed class InputRouter
         if (session is { IsAlive: true })
         {
             try { await session.ReleaseAll(); }
-            catch (Exception ex) { Console.WriteLine($"[!] Release-on-disconnect failed: {ex.Message}"); }
+            catch (Exception ex) { AgentLog.Warn($"Release-on-disconnect failed: {ex.Message}"); }
         }
 
         var secure = _sessions.GetSecureInputHelper();
         if (secure is { IsAlive: true })
         {
             try { await secure.ReleaseAll(); }
-            catch (Exception ex) { Console.WriteLine($"[!] Release-on-disconnect failed (secure): {ex.Message}"); }
+            catch (Exception ex) { AgentLog.Warn($"Release-on-disconnect failed (secure): {ex.Message}"); }
         }
     }
 }
@@ -103,6 +106,7 @@ public interface ISessionInputPath
     bool IsAlive { get; }
 
     Task<bool> MouseMoveRelative(int dx, int dy);
+    Task<bool> MouseMoveAbsolute(int x, int y);
     Task<bool> MouseClick(string button, string action);
     Task<bool> Scroll(int amount);
     Task<bool> SendKey(string key, List<string> modifiers);

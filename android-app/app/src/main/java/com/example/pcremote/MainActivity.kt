@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.PlayCircle
@@ -54,6 +55,7 @@ import com.example.pcremote.ui.KeyboardScreen
 import com.example.pcremote.ui.MediaScreen
 import com.example.pcremote.ui.PairingScreen
 import com.example.pcremote.ui.PowerScreen
+import com.example.pcremote.ui.RemoteDesktopScreen
 import com.example.pcremote.ui.SettingsScreen
 import com.example.pcremote.ui.TouchpadScreen
 import com.example.pcremote.ui.components.ConnectionBanner
@@ -65,8 +67,9 @@ import com.example.pcremote.ui.components.uiState
 import com.example.pcremote.ui.theme.RemoteTheme
 import kotlinx.coroutines.launch
 
-/** The four control destinations. */
+/** The five control destinations; the desktop view is the primary surface. */
 enum class AppScreen(val label: String) {
+    Desktop("Desktop"),
     Touchpad("Touchpad"),
     Keyboard("Keyboard"),
     Media("Media"),
@@ -138,7 +141,7 @@ private fun ControlHub(
     connState: ConnectionState,
     onSessionEnded: () -> Unit
 ) {
-    var screen by rememberSaveable { mutableStateOf(AppScreen.Touchpad) }
+    var screen by rememberSaveable { mutableStateOf(AppScreen.entries.first()) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showDetails by rememberSaveable { mutableStateOf(false) }
     val sensitivity by settingsStore.sensitivity.collectAsState()
@@ -202,6 +205,7 @@ private fun ControlHub(
                         },
                         icon = {
                             when (destination) {
+                                AppScreen.Desktop -> Icon(Icons.Filled.Computer, contentDescription = null)
                                 AppScreen.Touchpad -> Icon(Icons.Filled.Mouse, contentDescription = null)
                                 AppScreen.Keyboard -> Icon(Icons.Filled.Keyboard, contentDescription = null)
                                 AppScreen.Media -> Icon(Icons.Filled.PlayCircle, contentDescription = null)
@@ -235,6 +239,11 @@ private fun ControlHub(
                 ConnectionBanner(connection, connState, onRetry = { connection.reconnectLast() })
                 Box(modifier = Modifier.weight(1f)) {
                     when (screen) {
+                        AppScreen.Desktop -> RemoteDesktopScreen(
+                            connection = connection,
+                            pinStore = pinStore,
+                            tokenStore = tokenStore
+                        )
                         AppScreen.Touchpad -> TouchpadScreen(
                             connection = connection,
                             sensitivity = sensitivity,

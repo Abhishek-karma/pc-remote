@@ -234,7 +234,7 @@ public class PairingStore
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Could not load trusted devices ({ex.Message}); starting fresh");
+            AgentLog.Error($"Could not load trusted devices ({ex.Message}); starting fresh");
         }
     }
 
@@ -253,7 +253,7 @@ public class PairingStore
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Could not persist trusted devices ({ex.Message}); tokens are in-memory only for this run");
+            AgentLog.Error($"Could not persist trusted devices ({ex.Message}); tokens are in-memory only for this run");
         }
     }
 }

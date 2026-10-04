@@ -37,6 +37,9 @@ public sealed class IpcCoordinator
                     PairingCode = privilege == IpcPrivilege.Elevated ? _pairing.CurrentCode : null,
                     ConnectedDevices = Channel?.ConnectedCount ?? 0,
                     SessionState = _sessionManager.CurrentState.ToString().ToLowerInvariant(),
+                    // Streaming diagnostics: how many media clients are attached.
+                    Streaming = (Channel?.StreamingCount ?? 0) > 0,
+                    StreamClients = Channel?.StreamingCount ?? 0,
                 };
 
             case "generate_pairing_code":

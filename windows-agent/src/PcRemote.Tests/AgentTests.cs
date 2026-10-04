@@ -204,7 +204,7 @@ public class CommandAllowlistTests
     {
         foreach (var cmd in new[]
                  {
-                     "mouse_move", "mouse_click", "mouse_scroll", "key_press", "text_input",
+                     "mouse_move", "mouse_move_abs", "mouse_click", "mouse_scroll", "key_press", "text_input",
                      "media_control", "system_power", "sas", "session_status", "release_all",
                      "disconnect",
                  })

@@ -37,13 +37,13 @@ public static class CertificateManager
                 var protectedBytes = File.ReadAllBytes(CertFile);
                 var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.LocalMachine);
                 var cert = new X509Certificate2(pfx);
-                Console.WriteLine($"[+] TLS certificate loaded (thumbprint {cert.Thumbprint})");
+                AgentLog.Info($"TLS certificate loaded (thumbprint {cert.Thumbprint})");
                 return cert;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Could not load saved certificate ({ex.Message}); generating a new one");
+            AgentLog.Warn($"Could not load saved certificate ({ex.Message}); generating a new one");
         }
 
         var cert2 = CreateSelfSigned();
@@ -64,12 +64,12 @@ public static class CertificateManager
             var fresh = Guid.NewGuid().ToString();
             Directory.CreateDirectory(PairingStore.ServiceDataDir);
             File.WriteAllText(PcIdFile, fresh);
-            Console.WriteLine($"[+] PC identity created: {fresh[..8]}…");
+            AgentLog.Info($"PC identity created: {fresh[..8]}…");
             return fresh;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Could not persist PC identity ({ex.Message}); using ephemeral id");
+            AgentLog.Warn($"Could not persist PC identity ({ex.Message}); using ephemeral id");
             return Guid.NewGuid().ToString();
         }
     }
@@ -118,6 +118,6 @@ public static class CertificateManager
         var protectedBytes = ProtectedData.Protect(pfx, null, DataProtectionScope.LocalMachine);
         Directory.CreateDirectory(PairingStore.ServiceDataDir);
         File.WriteAllBytes(CertFile, protectedBytes);
-        Console.WriteLine($"[+] TLS certificate created and saved to {CertFile}");
+        AgentLog.Info($"TLS certificate created and saved to {CertFile}");
     }
 }

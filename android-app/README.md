@@ -28,6 +28,11 @@ The PC Remote Android client delivers an intuitive, tactile interface engineered
 
 ## 📱 Screens & Capabilities
 
+### Desktop Screen (`ui/RemoteDesktopScreen.kt`) — the primary destination
+- **Live H.264 Video**: A second authenticated WebSocket (`/stream`, same TLS port and certificate pin as the control channel) carries MediaCodec-decoded H.264 into a `Surface`. Control and media are separate connections, so a slow video frame never adds latency to your input.
+- **Direct Touch Mapping**: Touches map through the aspect-fitted video box into real desktop pixels. Tap = left click, long-press = right click, two-finger drag = scroll.
+- **Resilient Playback**: Frames that arrive out of order or after a decoder stall are dropped by sequence number, and a keyframe is requested automatically whenever the decoder resets or loses a reference frame.
+
 ### 🖱️ Touchpad Screen (`ui/TouchpadScreen.kt`)
 - **Fluid Gesture Surface**: Multi-touch canvas supporting 1-finger move, 1-finger tap (left click), 2-finger tap (right click), 2-finger scroll, and tap-and-drag.
 - **Precision Visuals**: Integrated crosshair reticle, corner alignment brackets, and subtle coordinate feedback overlay.
@@ -74,6 +79,7 @@ android-app/app/src/main/java/com/example/pcremote/
 │   └── ConnectionForegroundService.kt # Android Foreground Service for persistent background sessions
 └── ui/
     ├── PairingScreen.kt             # PC discovery list & manual IP/PIN connection flow
+    ├── RemoteDesktopScreen.kt       # Live H.264 desktop view & touch-to-pixel mapping
     ├── TouchpadScreen.kt            # Gesture surface, crosshair reticle, & D-pad layout
     ├── KeyboardScreen.kt            # F1-F24 function keys, modifier latching, & text input
     ├── MediaScreen.kt               # Media transport & hold-to-repeat volume controls

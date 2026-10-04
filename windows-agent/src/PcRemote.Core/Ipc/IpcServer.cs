@@ -44,7 +44,7 @@ public sealed class IpcServer : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[!] IPC pipe creation failed: {ex.Message}; retrying in 5 s");
+                AgentLog.Error($"IPC pipe creation failed: {ex.Message}; retrying in 5 s");
                 await Task.Delay(5000, ct);
                 continue;
             }
@@ -65,7 +65,7 @@ public sealed class IpcServer : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[!] IPC connection error: {ex.Message}");
+                    AgentLog.Error($"IPC connection error: {ex.Message}");
                 }
                 finally
                 {
@@ -105,7 +105,7 @@ public sealed class IpcServer : IAsyncDisposable
         {
             // Do not echo raw exception text back to the caller: the pipe is
             // reachable by every local user, so details stay in the service log.
-            Console.WriteLine($"[!] IPC handler for '{request.Type}' failed: {ex.Message}");
+            AgentLog.Error($"IPC handler for '{request.Type}' failed: {ex.Message}");
             reply = new IpcMessage { Type = request.Type, Ok = false, Error = "internal_error" };
         }
 

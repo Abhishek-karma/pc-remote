@@ -58,14 +58,15 @@ public sealed class PcRemoteService : ServiceBase
     /// <summary>Starts the runtime; shared between SCM start and --console mode.</summary>
     public void StartHost()
     {
-        Console.WriteLine("[*] PC Remote Service starting");
+        AgentLog.SetSubsystem("service");
+        AgentLog.Info("Service starting");
 
         var pairing = new PairingStore(PairingStore.DefaultServiceTokensFile, System.Security.Cryptography.DataProtectionScope.LocalMachine);
         var pcId = CertificateManager.LoadOrCreatePcId();
         var cert = CertificateManager.LoadOrCreate();
         if (!CertificateManager.IsUsableForServerAuth(cert))
         {
-            Console.WriteLine("[!] TLS certificate unusable; refusing to serve without TLS");
+            AgentLog.Error("TLS certificate unusable; refusing to serve without TLS");
             throw new InvalidOperationException("service certificate unusable");
         }
 
@@ -87,7 +88,7 @@ public sealed class PcRemoteService : ServiceBase
 
     public async Task StopHost()
     {
-        Console.WriteLine("[*] PC Remote Service stopping");
+        AgentLog.Info("Service stopping");
         _cts.Cancel();
         _controlChannel?.Stop();
         try { if (_hostTask is not null) await _hostTask; } catch (OperationCanceledException) { }
