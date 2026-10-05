@@ -1,259 +1,173 @@
-// Persistent pairing code and DPAPI-encrypted token authentication store.
+// Pairing and persistent trust tokens.
 //
-// Storage ownership: the Windows service owns this store.
-// The tray and session helpers never touch the token file directly — they go
-// through authenticated local IPC. Under the service the data protection
-// scope is LocalMachine (stored under ProgramData with an ACL restricted to
-// SYSTEM/Administrators); the legacy per-user scope is kept only for the
-// one-time migration path that hands old tray-owned tokens to the service.
+// Model: the PC shows a short six-digit code. The phone sends it once and gets a
+// long random token back, which it stores and sends on every later connection.
+// After that the code is never needed again — revoking a phone means deleting
+// its token, which the tray can do.
+//
+// The token list is DPAPI-encrypted at rest under LocalSystem scope, in a
+// directory whose ACL excludes ordinary users (the installer sets it). Neither
+// the code nor the token is ever logged.
 
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace PcRemote.Core;
 
-public class PairingStore
+public sealed class PairingStore
 {
-    public static TimeSpan CodeLifetime { get; set; } = TimeSpan.FromMinutes(5);
-    internal static int MaxPairingFailures { get; set; } = 5;
-    internal static TimeSpan PairingLockout { get; set; } = TimeSpan.FromMinutes(2);
+    /// <summary>Failed pairings allowed per IP before a temporary block. The code
+    /// is only six digits, so guessing is cheap without this.</summary>
+    private const int MaxFailuresPerIp = 5;
 
-    private string _currentPairingCode = "";
-    private DateTime _codeGeneratedAtUtc = DateTime.MinValue;
-    private readonly HashSet<string> _trustedTokens = [];
-    private readonly string _tokensFile;
-    private readonly DataProtectionScope _dpapiScope;
-
-    private sealed class FailureRecord
-    {
-        public int Count;
-        public DateTime LockedUntilUtc = DateTime.MinValue;
-    }
-
-    private readonly ConcurrentDictionary<string, FailureRecord> _pairingFailures = new();
-    private readonly object _lock = new();
-
-    public static string LegacyAppDataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PcRemoteAgent");
-
-    internal static string LegacyTokensFile => Path.Combine(LegacyAppDataDir, "trusted-devices.json");
+    private static readonly TimeSpan BlockFor = TimeSpan.FromMinutes(2);
 
     /// <summary>Service-owned mutable state lives under ProgramData, never beside
     /// the exe (Program Files is read-only for the service account).</summary>
-    public static string ServiceDataDir =>
+    public static string DataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PCRemote");
 
-    /// <summary>Rotating log directory shared by the service and its session
-    /// helpers: %ProgramData%\PCRemote\logs. Kept here so the path cannot drift
-    /// between components (and so docs/tests can reference one constant).</summary>
-    public static string ServiceLogDir => Path.Combine(ServiceDataDir, "logs");
+    public static string LogDir => Path.Combine(DataDir, "logs");
 
-    public static string DefaultServiceTokensFile => Path.Combine(ServiceDataDir, "trusted-devices.json");
+    private readonly string _tokensFile = Path.Combine(DataDir, "paired-devices.dat");
+    private readonly object _gate = new();
+    private readonly HashSet<string> _tokens = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (int Failures, DateTime BlockedUntil)> _blocked = new(StringComparer.Ordinal);
 
-    public PairingStore(string? tokensFilePath = null, DataProtectionScope scope = DataProtectionScope.CurrentUser)
+    private string _currentCode = "";
+    private DateTime _codeIssuedUtc = DateTime.MinValue;
+
+    public PairingStore()
     {
-        _tokensFile = tokensFilePath ?? LegacyTokensFile;
-        _dpapiScope = scope;
-        LoadTokens();
+        Load();
     }
 
-    public string GeneratePairingCode()
-    {
-        lock (_lock)
-        {
-            _currentPairingCode = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
-            _codeGeneratedAtUtc = DateTime.UtcNow;
-            return _currentPairingCode;
-        }
-    }
-
-    public bool IsCodeExpired()
-    {
-        lock (_lock)
-        {
-            return DateTime.UtcNow - _codeGeneratedAtUtc > CodeLifetime;
-        }
-    }
-
+    /// <summary>The code the user reads off the PC. Reissued once it is older
+    /// than five minutes so a photo of it does not stay useful.</summary>
     public string CurrentCode
     {
-        get { lock (_lock) return _currentPairingCode; }
-    }
-
-    public bool IsIpLockedOut(string clientIp) =>
-        _pairingFailures.TryGetValue(clientIp, out var rec) && rec.LockedUntilUtc > DateTime.UtcNow;
-
-    public bool TryAuthenticate(string? token, string? pairingCode, string clientIp = "unknown")
-    {
-        lock (_lock)
+        get
         {
-            if (IsIpLockedOut(clientIp)) return false;
-
-            if (!string.IsNullOrEmpty(token) && TrustedTokensContains(token))
+            lock (_gate)
             {
-                _pairingFailures.TryRemove(clientIp, out _);
-                return true;
-            }
-
-            // Fixed-time comparison for the pairing code: a plain == leaks
-            // information about how many leading digits were correct.
-            if (!string.IsNullOrEmpty(pairingCode)
-                && FixedTimeEquals(pairingCode, _currentPairingCode)
-                && DateTime.UtcNow - _codeGeneratedAtUtc <= CodeLifetime)
-            {
-                _pairingFailures.TryRemove(clientIp, out _);
-                _currentPairingCode = "";
-                return true;
-            }
-
-            RecordFailedAttempt(clientIp);
-            return false;
-        }
-    }
-
-    /// <summary>Constant-time string comparison. Length is compared first because
-    /// the pairing code is a fixed-width 6-digit value, and the caller has
-    /// already established both operands are non-empty.</summary>
-    private static bool FixedTimeEquals(string a, string b)
-    {
-        if (a.Length != b.Length) return false;
-        return CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(a),
-            System.Text.Encoding.UTF8.GetBytes(b));
-    }
-
-    /// <summary>Constant-time membership test over the trusted-token set.
-    /// HashSet.Contains short-circuits on the first mismatch, so tokens are
-    /// compared byte-by-byte over the (small) set instead.</summary>
-    private bool TrustedTokensContains(string token)
-    {
-        var found = false;
-        foreach (var t in _trustedTokens)
-        {
-            if (FixedTimeEquals(t, token)) found = true;
-        }
-        return found;
-    }
-
-    private void RecordFailedAttempt(string clientIp)
-    {
-        PruneExpiredFailures();
-        var rec = _pairingFailures.GetOrAdd(clientIp, _ => new FailureRecord());
-        rec.Count++;
-        if (rec.Count >= MaxPairingFailures)
-        {
-            rec.LockedUntilUtc = DateTime.UtcNow.Add(PairingLockout);
-        }
-    }
-
-    public void PruneExpiredFailures()
-    {
-        var now = DateTime.UtcNow;
-        if (_pairingFailures.Count > 100)
-        {
-            foreach (var (ip, rec) in _pairingFailures)
-            {
-                if (rec.LockedUntilUtc < now)
-                {
-                    _pairingFailures.TryRemove(ip, out _);
-                }
+                if (DateTime.UtcNow - _codeIssuedUtc > TimeSpan.FromMinutes(5)) NewCode();
+                return _currentCode;
             }
         }
     }
 
-    public string IssueTokenIfNeeded(string? existingToken)
+    public void RotateCode()
     {
-        lock (_lock)
-        {
-            if (!string.IsNullOrEmpty(existingToken) && _trustedTokens.Contains(existingToken))
-                return existingToken;
+        lock (_gate) NewCode();
+    }
 
-            var newToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-            _trustedTokens.Add(newToken);
-            SaveTokens();
-            return newToken;
+    private void NewCode()
+    {
+        _currentCode = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        _codeIssuedUtc = DateTime.UtcNow;
+    }
+
+    /// <summary>True when this IP has failed to pair too often recently.</summary>
+    public bool IsBlocked(string clientIp)
+    {
+        lock (_gate)
+        {
+            return _blocked.TryGetValue(clientIp, out var entry) && entry.BlockedUntil > DateTime.UtcNow;
         }
     }
 
-    public bool RevokeToken(string token)
+    /// <summary>
+    /// Validates a saved token or the displayed code. A failed attempt counts
+    /// against the caller; check <see cref="IsBlocked"/> first.
+    /// </summary>
+    public bool TryAuthenticate(string? token, string? code, string clientIp)
     {
-        lock (_lock)
+        lock (_gate)
         {
-            if (!_trustedTokens.Remove(token)) return false;
-            SaveTokens();
+            if (!string.IsNullOrEmpty(token) && _tokens.Contains(token)) return true;
+
+            if (string.IsNullOrEmpty(code) || code != _currentCode)
+            {
+                RecordFailure(clientIp);
+                return false;
+            }
             return true;
         }
     }
 
-    public void ClearAllTokens()
+    private void RecordFailure(string clientIp)
     {
-        lock (_lock)
+        var (failures, blockedUntil) = _blocked.TryGetValue(clientIp, out var entry)
+            ? entry
+            : (0, DateTime.MinValue);
+        failures++;
+        if (failures >= MaxFailuresPerIp) blockedUntil = DateTime.UtcNow + BlockFor;
+        _blocked[clientIp] = (failures, blockedUntil);
+    }
+
+    /// <summary>Returns the token to store: the one that was presented, or a new
+    /// one when this is a first-time pairing.</summary>
+    public string IssueTokenIfNeeded(string? presented)
+    {
+        lock (_gate)
         {
-            _trustedTokens.Clear();
-            SaveTokens();
+            if (!string.IsNullOrEmpty(presented) && _tokens.Contains(presented)) return presented;
+
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            _tokens.Add(token);
+            Save();
+            Log.Info($"paired a new device ({_tokens.Count} trusted)");
+            return token;
         }
     }
 
-    /// <summary>Imports tokens from the legacy tray-owned store (DPAPI CurrentUser
-    /// scope — the caller must run in the original user's context to decrypt).
-    /// Used once during migration from the pre-service agent.</summary>
-    public IReadOnlyCollection<string> ImportLegacyTokens(IReadOnlyCollection<string> tokens)
+    /// <summary>Forgets every phone. Each will have to pair again.</summary>
+    public void RevokeAll()
     {
-        lock (_lock)
+        lock (_gate)
         {
-            var imported = 0;
-            foreach (var t in tokens)
-                if (!string.IsNullOrWhiteSpace(t) && _trustedTokens.Add(t))
-                    imported++;
-            if (imported > 0) SaveTokens();
-            return _trustedTokens.ToArray();
+            if (_tokens.Count == 0) return;
+            _tokens.Clear();
+            Save();
+            Log.Info("revoked all paired devices");
         }
     }
 
-    public IReadOnlyCollection<string> TrustedTokens
-    {
-        get { lock (_lock) return _trustedTokens.ToArray(); }
-    }
-
-    private void LoadTokens()
+    private void Load()
     {
         try
         {
             if (!File.Exists(_tokensFile)) return;
-            var bytes = File.ReadAllBytes(_tokensFile);
-            var plain = ProtectedData.Unprotect(bytes, null, _dpapiScope);
-            var doc = JsonSerializer.Deserialize<HashSet<string>>(plain);
-            if (doc is not null)
-            {
-                lock (_lock)
-                {
-                    _trustedTokens.UnionWith(doc);
-                }
-            }
+            var plain = ProtectedData.Unprotect(File.ReadAllBytes(_tokensFile), null, DataProtectionScope.LocalMachine);
+            var saved = JsonSerializer.Deserialize<string[]>(plain);
+            if (saved is not null)
+                lock (_gate) _tokens.UnionWith(saved);
         }
         catch (Exception ex)
         {
-            AgentLog.Error($"Could not load trusted devices ({ex.Message}); starting fresh");
+            // Most likely a changed data-dir ACL or a rotated DPAPI key. Either
+            // way, treating every phone as unpaired is the safe reading.
+            Log.Error($"could not read paired devices ({ex.Message}); all phones must pair again");
         }
     }
 
-    private void SaveTokens()
+    private void Save()
     {
         try
         {
-            var plain = JsonSerializer.SerializeToUtf8Bytes(_trustedTokens);
-            var bytes = ProtectedData.Protect(plain, null, _dpapiScope);
-            var dir = Path.GetDirectoryName(_tokensFile)!;
-            Directory.CreateDirectory(dir);
+            Directory.CreateDirectory(DataDir);
+            var plain = JsonSerializer.SerializeToUtf8Bytes(_tokens);
+            var bytes = ProtectedData.Protect(plain, null, DataProtectionScope.LocalMachine);
 
-            var tempFile = Path.Combine(dir, $"{Path.GetFileName(_tokensFile)}.{Guid.NewGuid():N}.tmp");
-            File.WriteAllBytes(tempFile, bytes);
-            File.Move(tempFile, _tokensFile, overwrite: true);
+            // Write-then-rename: a crash mid-write must not destroy the trust
+            // store and force every phone to re-pair.
+            var temp = _tokensFile + ".tmp";
+            File.WriteAllBytes(temp, bytes);
+            File.Move(temp, _tokensFile, overwrite: true);
         }
         catch (Exception ex)
         {
-            AgentLog.Error($"Could not persist trusted devices ({ex.Message}); tokens are in-memory only for this run");
+            Log.Error($"could not save paired devices ({ex.Message}); they stay paired until restart");
         }
     }
 }

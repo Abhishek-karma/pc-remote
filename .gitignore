@@ -76,3 +76,5 @@ brag-output-*/
 TestResults/
 windows-agent/deploy/staging/
 windows-agent/deploy/deploy.log
+windows-agent/deploy/
+*.pdb

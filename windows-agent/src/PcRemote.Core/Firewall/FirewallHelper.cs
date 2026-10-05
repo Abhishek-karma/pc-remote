@@ -13,7 +13,7 @@ public static class FirewallHelper
     public const string TcpRuleName = "PC Remote Service (LAN, private)";
     public const string MdnsRuleName = "PC Remote mDNS (LAN, private)";
 
-    public static void EnsureFirewallRules()
+    public static void EnsureRules()
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -26,7 +26,7 @@ public static class FirewallHelper
         }
         catch (Exception ex)
         {
-            AgentLog.Warn($"Firewall auto-config notice: {ex.Message}");
+            Log.Warn($"Firewall auto-config notice: {ex.Message}");
         }
     }
 

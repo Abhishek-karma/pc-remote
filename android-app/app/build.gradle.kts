@@ -13,9 +13,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // CI injects these from the git tag.
-        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 10
-        versionName = (project.findProperty("versionName") as String?) ?: "0.2.1"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("versionName") as String?) ?: "1.0.0"
     }
 
     signingConfigs {
@@ -75,29 +74,19 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
-    // Proper vector icons for the nav bar / controls (revisit size impact if R8 is enabled).
-    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+
+    // The transport and the wire format.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-    // Encrypted storage for trust tokens + cert pins (09-SECURITY-PRIVACY.md §4).
+
+    // Keystore-backed storage for trust tokens and certificate pins.
     implementation("androidx.security:security-crypto:1.1.0")
 
-    // Unit tests: JUnit 5 per docs/11-TESTING-STRATEGY.md §1.
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:1.9.24")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-
-    // Instrumented/Compose tests (run on emulator, fake backends, no network).
-    androidTestImplementation(composeBom)
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test:core:1.6.1")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
 }

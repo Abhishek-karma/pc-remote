@@ -1,10 +1,9 @@
 // PC Remote Service - Windows service host.
 //
-// Privilege boundary: this process (LocalSystem) owns networking, auth/pairing,
-// session detection, privileged operations and the WSS control channel. It never
-// renders UI and never runs as the user. Desktop interaction is delegated to
-// the PCRemoteSession helper (user token, normal desktop) and to the same
-// helper in --secure-input mode (SYSTEM token, Winlogon desktop).
+// Privilege boundary: this process (LocalSystem) owns networking, pairing and
+// authentication, session detection and the tray IPC endpoint. It never renders
+// UI and never runs as the user. Input is delegated to PCRemoteInput, which the
+// service launches in the interactive session.
 
 using System.ServiceProcess;
 using PcRemote.Core;
@@ -15,22 +14,19 @@ internal static class Program
 {
     private static async Task Main(string[] args)
     {
-        // Logging is initialized for BOTH entry paths: a service started by the
-        // SCM has no console, so without this every diagnostic in the service,
-        // the session manager and the updater is silently discarded.
-        AgentLog.Init(PairingStore.ServiceLogDir);
+        // A service started by the SCM has no console, so without this every
+        // diagnostic would be silently discarded.
+        Log.Init(PairingStore.LogDir, "service");
 
         if (args.Contains("--console"))
         {
-            // Developer mode: run the same logic as a console process.
-            Console.WriteLine("=== PC Remote Service (console mode) ===");
-            var svc = new PcRemoteService();
-            await Task.Run(svc.StartHost);
-            Console.WriteLine("Press Ctrl+C to stop.");
-            var done = new TaskCompletionSource();
-            Console.CancelKeyPress += (_, e) => { e.Cancel = true; done.TrySetResult(); };
-            await done.Task;
-            await svc.StopHost();
+            Console.WriteLine("PC Remote service (console mode). Ctrl+C to stop.");
+            var host = new PcRemoteService();
+            host.StartHost();
+            var stopped = new TaskCompletionSource();
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; stopped.TrySetResult(); };
+            await stopped.Task;
+            await host.StopHost();
             return;
         }
 
@@ -41,12 +37,9 @@ internal static class Program
 public sealed class PcRemoteService : ServiceBase
 {
     private readonly CancellationTokenSource _cts = new();
-    private ControlChannel? _controlChannel;
-    private SessionManager? _sessionManager;
-    private InputRouter? _inputRouter;
-    private IpcServer? _ipcServer;
-    private Task? _hostTask;
-    private PairingStore? _pairing;
+    private SessionManager? _sessions;
+    private IpcServer? _ipc;
+    private Task? _listener;
 
     public PcRemoteService()
     {
@@ -55,45 +48,79 @@ public sealed class PcRemoteService : ServiceBase
         CanShutdown = true;
     }
 
-    /// <summary>Starts the runtime; shared between SCM start and --console mode.</summary>
     public void StartHost()
     {
-        AgentLog.SetSubsystem("service");
-        AgentLog.Info("Service starting");
+        Log.Info("service starting");
 
-        var pairing = new PairingStore(PairingStore.DefaultServiceTokensFile, System.Security.Cryptography.DataProtectionScope.LocalMachine);
+        var pairing = new PairingStore();
+        var certificate = CertificateManager.LoadOrCreate();
         var pcId = CertificateManager.LoadOrCreatePcId();
-        var cert = CertificateManager.LoadOrCreate();
-        if (!CertificateManager.IsUsableForServerAuth(cert))
-        {
-            AgentLog.Error("TLS certificate unusable; refusing to serve without TLS");
-            throw new InvalidOperationException("service certificate unusable");
-        }
 
-        _sessionManager = new SessionManager();
-        _sessionManager.Start();
+        _sessions = new SessionManager();
+        _sessions.Start();
 
-        _inputRouter = new InputRouter(_sessionManager);
+        var channel = new ControlChannel(
+            pairing,
+            pcId,
+            new InputRouter(_sessions),
+            // Read by the control channel to tell the phone which desktop the PC
+            // is showing; never read keystrokes or text.
+            () => _sessions.State.ToString().ToLowerInvariant(),
+            certificate);
 
-        var ipc = new IpcCoordinator(pairing, _sessionManager);
-        _ipcServer = new IpcServer(IpcEndpoints.ControlPipe, ipc.HandleIpc);
-        _ipcServer.Start();
+        // Tray IPC: status, a fresh pairing code, and revoking devices. That is
+        // the whole local control surface.
+        _ipc = new IpcServer(
+            IpcEndpoints.ControlPipe,
+            request => HandleIpc(request, pairing, channel, _sessions));
+        _ipc.Start();
 
-        _pairing = pairing;
-
-        _controlChannel = new ControlChannel(pairing, pcId, _inputRouter, _sessionManager, cert);
-        ipc.Channel = _controlChannel;
-        _hostTask = Task.Run(() => _controlChannel.RunAsync(_cts.Token), CancellationToken.None);
+        _listener = Task.Run(() => channel.RunAsync(_cts.Token), CancellationToken.None);
+        Log.Info("service started");
     }
 
     public async Task StopHost()
     {
-        AgentLog.Info("Service stopping");
+        Log.Info("service stopping");
         _cts.Cancel();
-        _controlChannel?.Stop();
-        try { if (_hostTask is not null) await _hostTask; } catch (OperationCanceledException) { }
-        _sessionManager?.Stop();
-        if (_ipcServer is not null) { try { await _ipcServer.DisposeAsync(); } catch { } }
+        _sessions?.Stop();
+        if (_ipc is not null) await _ipc.DisposeAsync();
+        try { if (_listener is not null) await _listener; } catch (OperationCanceledException) { }
+        Log.Info("service stopped");
+    }
+
+    /// <summary>Handles one tray request. The pairing code is trust material, so it
+    /// is only ever returned to a caller that passed the privilege check inside
+    /// IpcServer.</summary>
+    private static IpcMessage HandleIpc(
+        IpcMessage request,
+        PairingStore pairing,
+        ControlChannel channel,
+        SessionManager sessions)
+    {
+        switch (request.Type)
+        {
+            case "status":
+                return new IpcMessage
+                {
+                    Type = "status",
+                    Ok = true,
+                    PairingCode = pairing.CurrentCode,
+                    ConnectedDevices = channel.ConnectedCount,
+                    SessionState = sessions.State.ToString().ToLowerInvariant(),
+                };
+
+            case "new_pairing_code":
+                pairing.RotateCode();
+                return new IpcMessage { Type = request.Type, Ok = true, PairingCode = pairing.CurrentCode };
+
+            case "revoke_all":
+                pairing.RevokeAll();
+                return new IpcMessage { Type = request.Type, Ok = true };
+
+            default:
+                return new IpcMessage { Type = request.Type, Ok = false, Error = "unknown_request" };
+        }
     }
 
     protected override void OnStart(string[] args) => StartHost();
@@ -103,7 +130,6 @@ public sealed class PcRemoteService : ServiceBase
     protected override void OnShutdown()
     {
         _cts.Cancel();
-        _controlChannel?.Stop();
         base.OnShutdown();
     }
 }

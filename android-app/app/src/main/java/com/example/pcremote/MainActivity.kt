@@ -1,288 +1,94 @@
 package com.example.pcremote
 
 import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.Mouse
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import com.example.pcremote.network.ConnectionState
-import com.example.pcremote.network.PinStore
-import com.example.pcremote.network.RemoteConnection
-import com.example.pcremote.network.SettingsStore
-import com.example.pcremote.network.TokenStore
-import com.example.pcremote.service.ConnectionForegroundService
-import com.example.pcremote.ui.KeyboardScreen
-import com.example.pcremote.ui.MediaScreen
-import com.example.pcremote.ui.PairingScreen
-import com.example.pcremote.ui.PowerScreen
-import com.example.pcremote.ui.RemoteDesktopScreen
+import com.example.pcremote.connection.ConnectionState
+import com.example.pcremote.ui.PcListScreen
+import com.example.pcremote.ui.RemoteScreen
 import com.example.pcremote.ui.SettingsScreen
-import com.example.pcremote.ui.TouchpadScreen
-import com.example.pcremote.ui.components.ConnectionBanner
-import com.example.pcremote.ui.components.ConnectionDetailsSheet
-import com.example.pcremote.ui.components.ConnectionUiState
-import com.example.pcremote.ui.components.RemoteIconButton
-import com.example.pcremote.ui.components.RemoteTopBar
-import com.example.pcremote.ui.components.uiState
-import com.example.pcremote.ui.theme.RemoteTheme
-import kotlinx.coroutines.launch
 
-/** The five control destinations; the desktop view is the primary surface. */
-enum class AppScreen(val label: String) {
-    Desktop("Desktop"),
-    Touchpad("Touchpad"),
-    Keyboard("Keyboard"),
-    Media("Media"),
-    Power("Power")
-}
-
+/**
+ * The whole app is three screens and one flow:
+ *
+ *   PC list -> connect -> remote
+ *
+ * No navigation graph, no tab bar, no dashboard. The touchpad screen is the
+ * product.
+ */
 class MainActivity : ComponentActivity() {
-
-    private val vm: ConnectionViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // POST_NOTIFICATIONS is only used so a dropped connection can be
+        // reported; the app is fully usable if the user declines.
+        val requestNotifications =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         setContent {
-            RemoteTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    val connState by vm.connection.state.collectAsState()
-                    var sessionActive by rememberSaveable { mutableStateOf(false) }
-
-                    // Derive session membership from the single connection
-                    // state source — never a separate "connected" boolean.
-                    LaunchedEffect(connState) {
-                        when {
-                            connState == ConnectionState.CONNECTED -> sessionActive = true
-                            // Pairing is required again only when the token was
-                            // rejected; expected shutdown ends the session too.
-                            (connState == ConnectionState.FAILED && vm.connection.lastAuthFailed) ||
-                                (connState == ConnectionState.DISCONNECTED && vm.connection.lastDisconnectExpected) ->
-                                sessionActive = false
-                        }
-                    }
-
-                    if (sessionActive) {
-                        ControlHub(
-                            connection = vm.connection,
-                            tokenStore = vm.tokenStore,
-                            settingsStore = vm.settingsStore,
-                            pinStore = vm.pinStore,
-                            connState = connState,
-                            onSessionEnded = { sessionActive = false }
-                        )
-                    } else {
-                        PairingScreen(
-                            connection = vm.connection,
-                            tokenStore = vm.tokenStore,
-                            settingsStore = vm.settingsStore,
-                            pinStore = vm.pinStore,
-                            connState = connState,
-                            onConnected = { sessionActive = true }
-                        )
-                    }
-                }
+            MaterialTheme {
+                Surface { App(remember { AppState(application) }) }
             }
         }
     }
 }
 
-/**
- * Connected app shell: PC-name top bar with live status, connection banner,
- * active control screen, snackbar feedback, and an icon bottom nav
- *.
- */
 @Composable
-private fun ControlHub(
-    connection: RemoteConnection,
-    tokenStore: TokenStore,
-    settingsStore: SettingsStore,
-    pinStore: PinStore,
-    connState: ConnectionState,
-    onSessionEnded: () -> Unit
-) {
-    var screen by rememberSaveable { mutableStateOf(AppScreen.entries.first()) }
-    var showSettings by rememberSaveable { mutableStateOf(false) }
-    var showDetails by rememberSaveable { mutableStateOf(false) }
-    val sensitivity by settingsStore.sensitivity.collectAsState()
-    val haptics by settingsStore.hapticsEnabled.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+private fun App(state: AppState) {
+    val connection by state.connection.state.collectAsState()
+    val pcName by state.connection.pcName.collectAsState()
+    val desktop by state.connection.desktop.collectAsState()
+    val discovered by state.discovery.pcs.collectAsState()
+    val discoveryStatus by state.discovery.status.collectAsState()
 
-    val pcName = connection.currentHost?.let { settingsStore.getName(it) ?: it } ?: "PC Remote"
-
-    // Foreground service + notification permission while a session is active.
-    val notificationPermissionLauncher =
-        androidx.activity.compose.rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { }
-    LaunchedEffect(connState == ConnectionState.CONNECTED) {
-        if (connState == ConnectionState.CONNECTED) {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            try {
-                ContextCompat.startForegroundService(
-                    context, Intent(context, ConnectionForegroundService::class.java)
-                )
-            } catch (_: Exception) {}
-        } else {
-            try {
-                context.stopService(Intent(context, ConnectionForegroundService::class.java))
-            } catch (_: Exception) {}
-        }
+    // Discovery only runs while the user is picking a PC.
+    DisposableEffect(state) {
+        state.discovery.start()
+        onDispose { state.discovery.stop() }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            RemoteTopBar(
-                title = pcName,
-                connection = connection,
-                state = connState,
-                onStatusClick = { showDetails = true },
-                onSettingsClick = { showSettings = true },
-                onSwitchPcClick = { showDetails = true }
-            )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 3.dp
-            ) {
-                AppScreen.entries.forEach { destination ->
-                    val selected = destination == screen && !showSettings
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = {
-                            screen = destination
-                            showSettings = false
-                        },
-                        icon = {
-                            when (destination) {
-                                AppScreen.Desktop -> Icon(Icons.Filled.Computer, contentDescription = null)
-                                AppScreen.Touchpad -> Icon(Icons.Filled.Mouse, contentDescription = null)
-                                AppScreen.Keyboard -> Icon(Icons.Filled.Keyboard, contentDescription = null)
-                                AppScreen.Media -> Icon(Icons.Filled.PlayCircle, contentDescription = null)
-                                AppScreen.Power -> Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
-                            }
-                        },
-                        label = { Text(destination.label, fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                }
-            }
-        }
-    ) { padding ->
-        if (showSettings) {
-            SettingsScreen(
-                tokenStore = tokenStore,
-                settingsStore = settingsStore,
-                connection = connection,
-                onBack = { showSettings = false },
-                pinStore = pinStore,
-                modifier = Modifier.padding(padding)
-            )
-        } else {
-            Column(modifier = Modifier.padding(padding)) {
-                ConnectionBanner(connection, connState, onRetry = { connection.reconnectLast() })
-                Box(modifier = Modifier.weight(1f)) {
-                    when (screen) {
-                        AppScreen.Desktop -> RemoteDesktopScreen(
-                            connection = connection,
-                            pinStore = pinStore,
-                            tokenStore = tokenStore
-                        )
-                        AppScreen.Touchpad -> TouchpadScreen(
-                            connection = connection,
-                            sensitivity = sensitivity,
-                            hapticsEnabled = haptics,
-                            settingsStore = settingsStore
-                        )
-                        AppScreen.Keyboard -> KeyboardScreen(
-                            connection = connection,
-                            hapticsEnabled = haptics
-                        )
-                        AppScreen.Media -> MediaScreen(
-                            connection = connection,
-                            hapticsEnabled = haptics
-                        )
-                        AppScreen.Power -> PowerScreen(
-                            connection = connection,
-                            pcName = pcName,
-                            onFeedback = { message ->
-                                scope.launch { snackbarHostState.showSnackbar(message) }
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (showDetails) {
-        ConnectionDetailsSheet(
-            connection = connection,
-            settingsStore = settingsStore,
-            pinStore = pinStore,
-            connState = connState,
-            onDismiss = { showDetails = false },
-            onDisconnect = {
-                showDetails = false
-                connection.disconnect()
-                onSessionEnded()
-            }
+    when (state.screen) {
+        Screen.SETTINGS -> SettingsScreen(
+            sensitivity = state.sensitivity,
+            onSensitivity = state::updateSensitivity,
+            haptics = state.haptics,
+            onHaptics = state::updateHaptics,
+            pairedNames = state.pairedNames(),
+            onForget = state::forget,
+            onBack = { state.goToList() },
         )
+
+        else -> if (connection == ConnectionState.CONNECTED) {
+            RemoteScreen(
+                connection = state.connection,
+                state = connection,
+                pcName = pcName,
+                desktop = desktop,
+                sensitivity = state.sensitivity,
+                haptics = state.haptics,
+                onOpenSettings = { state.screen = Screen.SETTINGS },
+            )
+        } else {
+            PcListScreen(
+                pcs = discovered,
+                status = discoveryStatus,
+                onSelect = { pc, code -> state.connect(pc.host, code) },
+                onManual = { host, code -> state.connect(host, code) },
+                onRetryDiscovery = state.discovery::start,
+            )
+        }
     }
 }

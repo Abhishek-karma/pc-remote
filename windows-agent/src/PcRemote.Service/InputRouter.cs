@@ -1,28 +1,16 @@
-// Routes remote input to the correct Windows security boundary instead of
-// hoping one SendInput call fits all states.
+// Routes each command to the helper that can actually inject it.
 //
-//   Desktop state           | Path
-//   ------------------------|--------------------------------------
-//   Normal desktop          | session helper (user token)
-//   UAC / Winlogon / locked | secure helper (SYSTEM token in the console
-//                           | session, Winlogon desktop)
+//   Desktop state      | Helper
+//   -------------------|--------------------------------------
+//   Normal desktop     | session helper (logged-on user token)
+//   UAC / lock / logon | secure helper (SYSTEM, Winlogon)
 //
-// The router never injects into its own session-0 context — that would target
-// the wrong desktop and silently do nothing.
-//
-// Elevated foreground windows are NOT reachable: UIPI blocks lower-integrity
-// input and there is no UIAccess helper (an unsigned uiAccess binary cannot be
-// launched at all).
+// The service itself never injects: it lives in session 0, where SendInput would
+// target a desktop no user can see.
 
 using PcRemote.Core;
 
 namespace PcRemote.Service;
-
-/// <summary>Raised when no input path is currently available for a request.</summary>
-public class SessionUnavailableException : Exception
-{
-    public SessionUnavailableException(string message) : base(message) { }
-}
 
 public sealed class InputRouter
 {
@@ -33,87 +21,48 @@ public sealed class InputRouter
         _sessions = sessions;
     }
 
-    private ISessionInputPath ResolvePath()
+    /// <summary>Raised when the desktop is in a state we cannot reach. The control
+    /// channel turns this into a disconnect rather than silently dropping input.</summary>
+    public sealed class UnavailableException : Exception
     {
-        var state = _sessions.CurrentState;
-        switch (state)
+        public UnavailableException(string message) : base(message) { }
+    }
+
+    public Task Move(int dx, int dy) => Target.Move(dx, dy);
+
+    public Task Button(string button, string action) => Target.Button(button, action);
+
+    public Task Scroll(int notches) => Target.Scroll(notches);
+
+    public Task Key(string key, string action) => Target.Key(key, action);
+
+    public Task Text(string text) => Target.Text(text);
+
+    /// <summary>Releases everything the desktop could still be holding, on BOTH
+    /// helpers. On disconnect we cannot know which one was mid-drag, and a stuck
+    /// button is worse than an extra pipe round trip.</summary>
+    public async Task ReleaseAll()
+    {
+        foreach (var helper in new[] { _sessions.SessionHelper, _sessions.SecureHelper })
         {
-            case DesktopState.Normal:
-                var session = _sessions.GetSessionWorker();
-                if (session is { IsAlive: true }) return session;
-                throw new SessionUnavailableException("no user session helper running");
-            case DesktopState.SecureDesktop:
-            case DesktopState.Logon:
-            case DesktopState.Locked:
-                var secure = _sessions.GetSecureInputHelper();
-                if (secure is { IsAlive: true }) return secure;
-                throw new SessionUnavailableException($"no secure input helper for state {state}");
-            default:
-                throw new SessionUnavailableException($"unsupported desktop state {state}");
+            if (helper is not { IsAlive: true }) continue;
+            try { await helper.ReleaseAll(); }
+            catch (Exception ex) { Log.Warn($"release-all failed: {ex.Message}"); }
         }
     }
 
-    public Task<bool> MouseMoveRelative(int dx, int dy) =>
-        ResolvePath().MouseMoveRelative(dx, dy);
-
-    public Task<bool> MouseMoveAbsolute(int x, int y) =>
-        ResolvePath().MouseMoveAbsolute(x, y);
-
-    public Task<bool> MouseClick(string button, string action) =>
-        ResolvePath().MouseClick(button, action);
-
-    public Task<bool> Scroll(int amount) =>
-        ResolvePath().Scroll(amount);
-
-    public Task<bool> SendKey(string key, List<string> modifiers) =>
-        ResolvePath().SendKey(key, modifiers);
-
-    public Task<bool> TypeText(string text) =>
-        ResolvePath().TypeText(text);
-
-    public Task<bool> MediaControl(string action)
+    /// <summary>The helper for the desktop currently receiving input.</summary>
+    private InputHelper Target => _sessions.State switch
     {
-        // Media keys only make sense for the interactive session.
-        var session = _sessions.GetSessionWorker();
-        if (session is { IsAlive: true }) return session.MediaControl(action);
-        return Task.FromResult(true);
-    }
+        DesktopState.Normal => _sessions.SessionHelper is { IsAlive: true } session
+            ? session
+            : throw new UnavailableException("no session helper"),
 
-    /// <summary>A client can drop mid-drag (WiFi loss, app killed), leaving a
-    /// mouse button physically held down. Releasing is best-effort: tell
-    /// whichever helper is alive to drop everything it is holding.</summary>
-    public async Task ReleaseAllButtons()
-    {
-        var session = _sessions.GetSessionWorker();
-        if (session is { IsAlive: true })
-        {
-            try { await session.ReleaseAll(); }
-            catch (Exception ex) { AgentLog.Warn($"Release-on-disconnect failed: {ex.Message}"); }
-        }
+        DesktopState.Locked or DesktopState.Secure or DesktopState.Logon =>
+            _sessions.SecureHelper is { IsAlive: true } secure
+                ? secure
+                : throw new UnavailableException("no secure helper"),
 
-        var secure = _sessions.GetSecureInputHelper();
-        if (secure is { IsAlive: true })
-        {
-            try { await secure.ReleaseAll(); }
-            catch (Exception ex) { AgentLog.Warn($"Release-on-disconnect failed (secure): {ex.Message}"); }
-        }
-    }
-}
-
-/// <summary>Common input surface every session-side path implements.</summary>
-public interface ISessionInputPath
-{
-    bool IsAlive { get; }
-
-    Task<bool> MouseMoveRelative(int dx, int dy);
-    Task<bool> MouseMoveAbsolute(int x, int y);
-    Task<bool> MouseClick(string button, string action);
-    Task<bool> Scroll(int amount);
-    Task<bool> SendKey(string key, List<string> modifiers);
-    Task<bool> TypeText(string text);
-    Task<bool> MediaControl(string action);
-
-    /// <summary>Release every held mouse button/modifier. Used when a client
-    /// disconnects mid-drag so the PC is never left with a stuck button.</summary>
-    Task<bool> ReleaseAll();
+        _ => throw new UnavailableException($"desktop state {_sessions.State}"),
+    };
 }

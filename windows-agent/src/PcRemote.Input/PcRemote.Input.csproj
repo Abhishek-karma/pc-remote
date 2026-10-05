@@ -1,24 +1,25 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- The input helper. One small executable with NO project references: it
+         cannot reach the network, the pairing store or any other subsystem,
+         which is what keeps the secure-desktop path from spreading. -->
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>PcRemote.Service</RootNamespace>
-    <AssemblyName>PCRemoteService</AssemblyName>
+    <RootNamespace>PcRemote.Input</RootNamespace>
+    <AssemblyName>PCRemoteInput</AssemblyName>
     <VersionPrefix>1.0.0</VersionPrefix>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
-    <Product>PC Remote Service</Product>
+    <Product>PC Remote Input Helper</Product>
     <ApplicationIcon>..\..\app.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="PcRemote.Tests" />
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
-    <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
   </ItemGroup>
 
 </Project>

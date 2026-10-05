@@ -1,8 +1,8 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/PcRemote.Core/PcRemote.Core.csproj" />
+    <Project Path="src/PcRemote.Input/PcRemote.Input.csproj" />
     <Project Path="src/PcRemote.Service/PcRemote.Service.csproj" />
-    <Project Path="src/PcRemote.Session/PcRemote.Session.csproj" />
     <Project Path="src/PcRemote.Tests/PcRemote.Tests.csproj" />
     <Project Path="src/PcRemote.Tray/PcRemote.Tray.csproj" />
   </Folder>

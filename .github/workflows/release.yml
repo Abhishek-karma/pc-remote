@@ -1,9 +1,9 @@
 name: release
 
-# Tag-triggered release: build + validate both platforms, then publish the
-# GitHub Release with checksums. Windows produces PC-Remote-Setup.exe (signed
-# when signing secrets are configured) plus a SHA-256 sidecar consumed by the
-# service updater. A failed platform blocks the release.
+# Tag-triggered release: build and validate both platforms, then publish
+# the GitHub Release with checksums. Windows produces PC-Remote-Setup.exe
+# (signed when signing secrets are configured) plus a SHA-256 sidecar.
+# A failed platform blocks the release.
 
 on:
   push:
@@ -61,7 +61,7 @@ jobs:
             Write-Warning "No signing certificate configured; skipping signature validation (unsigned dev release)."
             exit 0
           }
-          $staged = @("PCRemoteService.exe","PCRemoteSession.exe","PCRemoteTray.exe") |
+          $staged = @("PCRemoteService.exe","PCRemoteInput.exe","PCRemoteTray.exe") |
             ForEach-Object { Get-AuthenticodeSignature "installer/staging/$_" }
           $invalid = $staged | Where-Object { $_.Status -ne 'Valid' }
           if ($invalid) { $invalid | ForEach-Object { throw "invalid signature: $($_.Path)" } }
@@ -197,8 +197,8 @@ jobs:
             echo "PC Remote $TAG"
             echo ""
             echo "## Windows"
-            echo "- \`PC-Remote-Setup.exe\` — full installer (installs the PCRemoteService Windows service, tray UI and session helpers to Program Files). Install once; the PC is then always reachable, including before logon and after reboot."
-            echo "- \`PC-Remote-Setup.exe.sha256\` — digest consumed by the built-in updater; it refuses to install an update that fails SHA-256 + Authenticode verification."
+            echo "- \`PC-Remote-Setup.exe\` — full installer (installs the PCRemoteService Windows service, tray UI and the input helper and tray to Program Files). Install once; the PC is then always reachable, including before logon and after reboot."
+            echo "- \`PC-Remote-Setup.exe.sha256\` — SHA-256 digest of the installer."
             echo ""
             echo "## Android"
             echo "- \`PC-Remote-Android.apk\` — Android app"

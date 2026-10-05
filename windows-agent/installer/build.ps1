@@ -18,7 +18,7 @@ $staging = Join-Path $PSScriptRoot "staging"
 
 $projects = @(
     "src/PcRemote.Service/PcRemote.Service.csproj",
-    "src/PcRemote.Session/PcRemote.Session.csproj",
+    "src/PcRemote.Input/PcRemote.Input.csproj",
     "src/PcRemote.Tray/PcRemote.Tray.csproj"
 )
 

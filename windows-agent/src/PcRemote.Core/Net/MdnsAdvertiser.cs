@@ -32,13 +32,13 @@ public static class MdnsAdvertiser
             _discovery = new ServiceDiscovery();
             _discovery.Advertise(profile);
 
-            AgentLog.Info($"mDNS: advertising \"{instance}\" {ServiceType} on port {port} (pcid {pcId[..8]}…)");
+            Log.Info($"mDNS: advertising \"{instance}\" {ServiceType} on port {port} (pcid {pcId[..8]}…)");
         }
         catch (Exception ex)
         {
             // Discovery is a convenience, not a hard dependency — fall back to
             // the manual-IP flow.
-            AgentLog.Warn($"mDNS advertisement failed: {ex.Message} — manual IP entry only");
+            Log.Warn($"mDNS advertisement failed: {ex.Message} — manual IP entry only");
         }
     }
 

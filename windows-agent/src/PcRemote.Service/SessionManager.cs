@@ -15,7 +15,7 @@ public enum DesktopState
 {
     Unknown,
     Normal,          // interactive desktop
-    SecureDesktop,   // UAC consent/credential UI (WinSta0\Winlogon, user still logged in)
+    Secure,   // UAC consent/credential UI (WinSta0\Winlogon, user still logged in)
     Locked,          // Win+L or switch-user lock screen
     Logon,           // no user logged in; Windows login screen
 }
@@ -38,16 +38,16 @@ public sealed class SessionManager : IDisposable
     private volatile bool _stop;
     private uint _consoleSessionId;
 
-    private SessionWorkerClient? _sessionWorker;
-    private SessionWorkerClient? _secureHelper;
+    private InputHelper? _sessionHelper;
+    private InputHelper? _secureHelper;
 
-    /// <summary>Guards CurrentState and both helper handles.</summary>
+    /// <summary>Guards State and both helper handles.</summary>
     private readonly object _stateLock = new();
 
-    private DesktopState _currentState = DesktopState.Unknown;
+    private DesktopState _State = DesktopState.Unknown;
 
     /// <summary>Read lock-free from the network/IPC threads for status reporting.</summary>
-    public DesktopState CurrentState => _currentState;
+    public DesktopState State => _State;
 
     public void Start()
     {
@@ -68,21 +68,21 @@ public sealed class SessionManager : IDisposable
         };
         _messageThread.SetApartmentState(ApartmentState.STA);
         _messageThread.Start();
-        AgentLog.Info($"SessionManager started (console session {_consoleSessionId})");
+        Log.Info($"SessionManager started (console session {_consoleSessionId})");
     }
 
     public void Stop()
     {
         _stop = true;
-        _sessionWorker?.Kill();
+        _sessionHelper?.Kill();
         _secureHelper?.Kill();
         if (_hwnd != IntPtr.Zero)
             PostMessage(_hwnd, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
     }
 
-    public ISessionInputPath? GetSessionWorker() => _sessionWorker;
+    public InputHelper? SessionHelper => _sessionHelper;
 
-    public ISessionInputPath? GetSecureInputHelper() => _secureHelper;
+    public InputHelper? SecureHelper => _secureHelper;
 
     private void MessageLoop()
     {
@@ -96,7 +96,7 @@ public sealed class SessionManager : IDisposable
             WTSRegisterSessionNotification(_hwnd, NOTIFY_FOR_ALL_SESSIONS);
             RefreshState();
 
-            // The timer only re-posts a message: every mutation of CurrentState
+            // The timer only re-posts a message: every mutation of State
             // and the helper handles stays on this STA thread.
             var timer = new System.Threading.Timer(
                 _ => PostMessage(_hwnd, WM_APP_REFRESH, IntPtr.Zero, IntPtr.Zero),
@@ -124,7 +124,7 @@ public sealed class SessionManager : IDisposable
         }
         catch (Exception ex)
         {
-            AgentLog.Error($"SessionManager loop died: {ex.Message}");
+            Log.Error($"SessionManager loop died: {ex.Message}");
         }
     }
 
@@ -141,13 +141,13 @@ public sealed class SessionManager : IDisposable
             case WTS_SESSION_UNLOCK:
                 _userLoggedOn = true;
                 _locked = false;
-                EnsureSessionWorker(sessionId);
+                EnsureInputHelper(sessionId);
                 break;
             case WTS_SESSION_LOGOFF:
                 _userLoggedOn = false;
                 _locked = false;
-                _sessionWorker?.Kill();
-                _sessionWorker = null;
+                _sessionHelper?.Kill();
+                _sessionHelper = null;
                 _secureHelper?.Kill();
                 _secureHelper = null;
                 break;
@@ -157,11 +157,11 @@ public sealed class SessionManager : IDisposable
                 break;
             case WTS_CONSOLE_CONNECT:
                 if (sessionId == _consoleSessionId)
-                    EnsureSessionWorker(sessionId);
+                    EnsureInputHelper(sessionId);
                 break;
             case WTS_CONSOLE_DISCONNECT:
-                _sessionWorker?.Kill();
-                _sessionWorker = null;
+                _sessionHelper?.Kill();
+                _sessionHelper = null;
                 _secureHelper?.Kill();
                 _secureHelper = null;
                 break;
@@ -171,7 +171,7 @@ public sealed class SessionManager : IDisposable
 
     /// <summary>Re-evaluates the desktop state and (re)spawns helpers as needed.
     /// The IPC thread reports desktop state while this STA thread handles WTS
-    /// events; both mutate CurrentState and the helper handles, and launching a
+    /// events; both mutate State and the helper handles, and launching a
     /// helper twice would orphan a process holding a pipe instance.</summary>
     private void RefreshState()
     {
@@ -184,19 +184,19 @@ public sealed class SessionManager : IDisposable
             if (IsLaunchableSession(reported)) _consoleSessionId = reported;
 
             var newState = DetectState();
-            if (newState != CurrentState)
+            if (newState != State)
             {
-                AgentLog.Info($"Desktop state: {CurrentState} -> {newState}");
-                _currentState = newState;
+                Log.Info($"Desktop state: {State} -> {newState}");
+                _State = newState;
                 // Opportunistically (re)spawn helpers for the new reality.
                 switch (newState)
                 {
                     case DesktopState.Normal:
-                        EnsureSessionWorker(_consoleSessionId);
+                        EnsureInputHelper(_consoleSessionId);
                         break;
                     case DesktopState.Locked:
                     case DesktopState.Logon:
-                    case DesktopState.SecureDesktop:
+                    case DesktopState.Secure:
                         EnsureSecureHelper(_consoleSessionId);
                         break;
                 }
@@ -208,11 +208,11 @@ public sealed class SessionManager : IDisposable
                 switch (newState)
                 {
                     case DesktopState.Normal:
-                        EnsureSessionWorker(_consoleSessionId); // brings both helpers
+                        EnsureInputHelper(_consoleSessionId); // brings both helpers
                         break;
                     case DesktopState.Locked:
                     case DesktopState.Logon:
-                    case DesktopState.SecureDesktop:
+                    case DesktopState.Secure:
                         EnsureSecureHelper(_consoleSessionId);
                         break;
                 }
@@ -281,16 +281,16 @@ public sealed class SessionManager : IDisposable
     {
         if (!_userLoggedOn) return DesktopState.Logon;
         if (_locked) return DesktopState.Locked;
-        return _secureDesktopActive ? DesktopState.SecureDesktop : DesktopState.Normal;
+        return _SecureActive ? DesktopState.Secure : DesktopState.Normal;
     }
 
-    private volatile bool _secureDesktopActive;
+    private volatile bool _SecureActive;
 
     /// <summary>Called from the IPC coordinator when the secure-input helper
     /// reports the name of the active input desktop in the console session.</summary>
     public void ReportDesktopState(string desktopName)
     {
-        _secureDesktopActive = string.Equals(desktopName, "Winlogon", StringComparison.OrdinalIgnoreCase);
+        _SecureActive = string.Equals(desktopName, "Winlogon", StringComparison.OrdinalIgnoreCase);
         RefreshState();
     }
 
@@ -298,20 +298,20 @@ public sealed class SessionManager : IDisposable
     // Helper process management
     // ------------------------------------------------------------------
 
-    private void EnsureSessionWorker(uint sessionId)
+    private void EnsureInputHelper(uint sessionId)
     {
         sessionId = ResolveInputSessionId(sessionId);
         if (sessionId == 0) return;
 
-        if (_sessionWorker is { IsAlive: true }) return;
-        _sessionWorker?.Kill(); // reap the dead one before replacing it
-        _sessionWorker = null;
+        if (_sessionHelper is { IsAlive: true }) return;
+        _sessionHelper?.Kill(); // reap the dead one before replacing it
+        _sessionHelper = null;
 
-        var client = SessionWorkerClient.LaunchAsUser(sessionId, secure: false);
+        var client = InputHelper.Launch(sessionId, secure: false);
         if (client is not null)
         {
-            _sessionWorker = client;
-            AgentLog.Info($"Session helper running in session {sessionId}");
+            _sessionHelper = client;
+            Log.Info($"Session helper running in session {sessionId}");
         }
 
         EnsureSecureHelper(sessionId);
@@ -330,14 +330,14 @@ public sealed class SessionManager : IDisposable
         _secureHelper = LaunchSecureHelper(ResolveInputSessionId(sessionId));
     }
 
-    private SessionWorkerClient? LaunchSecureHelper(uint sessionId)
+    private InputHelper? LaunchSecureHelper(uint sessionId)
     {
         if (sessionId == 0) return null;
-        var client = SessionWorkerClient.LaunchAsUser(sessionId, secure: true);
+        var client = InputHelper.Launch(sessionId, secure: true);
         if (client is not null)
-            AgentLog.Info($"Secure input helper running in session {sessionId}");
+            Log.Info($"Secure input helper running in session {sessionId}");
         else
-            AgentLog.Warn($"Secure input helper could not start in session {sessionId} (no SYSTEM token? not LocalSystem?)");
+            Log.Warn($"Secure input helper could not start in session {sessionId} (no SYSTEM token? not LocalSystem?)");
         return client;
     }
 

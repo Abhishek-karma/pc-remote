@@ -17,8 +17,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PcRemote.Core\PcRemote.Core.csproj" />
+    <ProjectReference Include="..\PcRemote.Input\PcRemote.Input.csproj" />
     <ProjectReference Include="..\PcRemote.Service\PcRemote.Service.csproj" />
-    <ProjectReference Include="..\PcRemote.Session\PcRemote.Session.csproj" />
   </ItemGroup>
 
 </Project>

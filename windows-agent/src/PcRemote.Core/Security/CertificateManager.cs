@@ -22,8 +22,8 @@ namespace PcRemote.Core;
 
 public static class CertificateManager
 {
-    private static string CertFile => Path.Combine(PairingStore.ServiceDataDir, "server-cert.dat");
-    private static string PcIdFile => Path.Combine(PairingStore.ServiceDataDir, "pc-id");
+    private static string CertFile => Path.Combine(PairingStore.DataDir, "server-cert.dat");
+    private static string PcIdFile => Path.Combine(PairingStore.DataDir, "pc-id");
 
     /// <summary>Loads the persisted certificate, or creates it on first run.
     /// Never throws — the caller falls back to refusing connections (we never
@@ -37,13 +37,13 @@ public static class CertificateManager
                 var protectedBytes = File.ReadAllBytes(CertFile);
                 var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.LocalMachine);
                 var cert = new X509Certificate2(pfx);
-                AgentLog.Info($"TLS certificate loaded (thumbprint {cert.Thumbprint})");
+                Log.Info($"TLS certificate loaded (thumbprint {cert.Thumbprint})");
                 return cert;
             }
         }
         catch (Exception ex)
         {
-            AgentLog.Warn($"Could not load saved certificate ({ex.Message}); generating a new one");
+            Log.Warn($"Could not load saved certificate ({ex.Message}); generating a new one");
         }
 
         var cert2 = CreateSelfSigned();
@@ -62,14 +62,14 @@ public static class CertificateManager
                 if (Guid.TryParse(id, out _)) return id;
             }
             var fresh = Guid.NewGuid().ToString();
-            Directory.CreateDirectory(PairingStore.ServiceDataDir);
+            Directory.CreateDirectory(PairingStore.DataDir);
             File.WriteAllText(PcIdFile, fresh);
-            AgentLog.Info($"PC identity created: {fresh[..8]}…");
+            Log.Info($"PC identity created: {fresh[..8]}…");
             return fresh;
         }
         catch (Exception ex)
         {
-            AgentLog.Warn($"Could not persist PC identity ({ex.Message}); using ephemeral id");
+            Log.Warn($"Could not persist PC identity ({ex.Message}); using ephemeral id");
             return Guid.NewGuid().ToString();
         }
     }
@@ -116,8 +116,8 @@ public static class CertificateManager
     {
         var pfx = cert.Export(X509ContentType.Pkcs12);
         var protectedBytes = ProtectedData.Protect(pfx, null, DataProtectionScope.LocalMachine);
-        Directory.CreateDirectory(PairingStore.ServiceDataDir);
+        Directory.CreateDirectory(PairingStore.DataDir);
         File.WriteAllBytes(CertFile, protectedBytes);
-        AgentLog.Info($"TLS certificate created and saved to {CertFile}");
+        Log.Info($"TLS certificate created and saved to {CertFile}");
     }
 }
