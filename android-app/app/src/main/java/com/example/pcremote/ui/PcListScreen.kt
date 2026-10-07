@@ -33,22 +33,24 @@ import com.example.pcremote.discovery.DiscoveryStatus
 /**
  * The first screen: pick a PC.
  *
- * Discovered PCs are listed and tappable. Tapping one asks for the six-digit code
- * shown on the PC, which is the only manual step in the whole product. Manual IP
- * entry sits underneath for the case discovery cannot cover.
+ * Discovered PCs are listed and tappable. A PC we are already paired with
+ * connects straight away - that is the whole point of pairing. Anything else
+ * asks for the six-digit code shown on the PC, which is the only manual step in
+ * the product. Manual IP entry sits underneath for the case discovery cannot
+ * cover.
  */
 @Composable
 fun PcListScreen(
     pcs: List<DiscoveredPc>,
     status: DiscoveryStatus?,
-    onSelect: (DiscoveredPc, String) -> Unit,
-    onManual: (String, String) -> Unit,
+    isPaired: (pcId: String) -> Boolean,
+    onConnect: (host: String, pcId: String?, code: String?) -> Unit,
     onRetryDiscovery: () -> Unit,
 ) {
     var manualIp by remember { mutableStateOf("") }
 
     // The PC we are pairing with, held while the code is typed.
-    var pairingWith by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pairingWith by remember { mutableStateOf<PendingPairing?>(null) }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text(
@@ -64,7 +66,14 @@ fun PcListScreen(
                 modifier = Modifier.weight(1f),
             ) {
                 items(pcs, key = { it.serviceName }) { pc ->
-                    PcRow(pc.name, pc.host) { pairingWith = pc.host to pc.name }
+                    PcRow(pc.name, pc.host) {
+                        val pcId = pc.pcId
+                        if (pcId != null && isPaired(pcId)) {
+                            onConnect(pc.host, pcId, null)
+                        } else {
+                            pairingWith = PendingPairing(pc.host, pc.name, pcId)
+                        }
+                    }
                 }
             }
 
@@ -112,7 +121,7 @@ fun PcListScreen(
             Button(
                 onClick = {
                     manualIp.trim().takeIf { it.isNotEmpty() }
-                        ?.let { pairingWith = it to it }
+                        ?.let { pairingWith = PendingPairing(host = it, name = it, pcId = null) }
                 },
                 enabled = manualIp.isNotBlank(),
                 modifier = Modifier.padding(start = 8.dp),
@@ -122,19 +131,28 @@ fun PcListScreen(
         }
     }
 
-    pairingWith?.let { (host, name) ->
+    pairingWith?.let { pending ->
         PairingDialog(
-            pcName = name,
+            pcName = pending.name,
             onDismiss = { pairingWith = null },
             onConfirm = { code ->
                 pairingWith = null
-                onManual(host, code)
+                onConnect(pending.host, pending.pcId, code.ifEmpty { null })
             },
         )
     }
 }
 
-/** Asks for the code shown on the PC. Digits only: it is always six digits. */
+/** A PC waiting for its pairing code to be typed. */
+private data class PendingPairing(
+    val host: String,
+    val name: String,
+    val pcId: String?,
+)
+
+/**
+ * Asks for the code shown on the PC. Digits only: it is always six digits.
+ */
 @Composable
 private fun PairingDialog(
     pcName: String,

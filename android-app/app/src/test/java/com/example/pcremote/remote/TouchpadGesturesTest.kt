@@ -56,9 +56,35 @@ class TouchpadGesturesTest {
         assertEquals(Action.HoldStart, g.onDown(100f, 100f, pointers = 1, heldMs = 400))
         assertTrue(g.isHolding)
 
-        // A held drag must not also move the cursor.
-        assertNull(g.onMove(160f, 100f, pointers = 1))
+        // The whole point of a hold is dragging: the cursor must follow.
+        assertEquals(Action.Move(90f, 0f), g.onMove(160f, 100f, pointers = 1))
         assertEquals(Action.HoldEnd, g.onUp(1, 900, 60f))
+        assertTrue(!g.isHolding)
+    }
+
+    @Test
+    fun `a still finger that runs out the hold window starts a hold`() {
+        val g = gestures()
+        g.onDown(100f, 100f, pointers = 1)
+        assertEquals(Action.HoldStart, g.onLongPress())
+        assertTrue(g.isHolding)
+    }
+
+    @Test
+    fun `a finger that has moved is never a long press`() {
+        val g = gestures()
+        g.onDown(100f, 100f, pointers = 1)
+        g.onMove(140f, 100f, pointers = 1)
+        assertNull(g.onLongPress())
+        assertTrue(!g.isHolding)
+    }
+
+    @Test
+    fun `a second finger on the pad is never a long press`() {
+        val g = gestures()
+        g.onDown(100f, 100f, pointers = 1)
+        g.onMove(100f, 100f, pointers = 2)
+        assertNull(g.onLongPress())
         assertTrue(!g.isHolding)
     }
 

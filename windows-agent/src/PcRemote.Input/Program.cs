@@ -67,7 +67,7 @@ internal static class Program
 
         try
         {
-            await ServeAsync(pipeName, cts.Token);
+            await ServeAsync(pipeName, secure, cts.Token);
         }
         catch (OperationCanceledException) { /* shutting down */ }
         catch (Exception ex)
@@ -83,7 +83,7 @@ internal static class Program
         }
         return 0;
     }
-private static async Task ServeAsync(string pipeName, CancellationToken ct)
+    private static async Task ServeAsync(string pipeName, bool secure, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -110,14 +110,14 @@ private static async Task ServeAsync(string pipeName, CancellationToken ct)
             // the service owns all the sequencing.
             _ = Task.Run(async () =>
             {
-                try { await HandleAsync(current, ct); }
+                try { await HandleAsync(current, secure, ct); }
                 catch (Exception ex) { Log.Warn($"pipe error: {ex.Message}"); }
                 finally { try { current.Dispose(); } catch { /* nothing to do */ } }
             }, CancellationToken.None);
         }
     }
 
-    private static async Task HandleAsync(NamedPipeServerStream server, CancellationToken ct)
+    private static async Task HandleAsync(NamedPipeServerStream server, bool secure, CancellationToken ct)
     {
         var lengthBytes = new byte[4];
         if (!await ReadExactAsync(server, lengthBytes, ct)) return;
@@ -132,10 +132,35 @@ private static async Task ServeAsync(string pipeName, CancellationToken ct)
         catch (JsonException) { return; }
         if (command is null) return;
 
-        var reply = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { ok = Execute(command) }));
-        var replyLength = BitConverter.GetBytes(reply.Length);
-        await server.WriteAsync(replyLength, ct);
-        await server.WriteAsync(reply, ct);
+        // A desktop query is answered regardless of which desktop is active —
+        // the service asks precisely to LEARN that.
+        if (command.Op == "desktop")
+        {
+            await WriteReplyAsync(server, new { ok = true, desktop = SecureDesktop.GetActiveInputDesktopName() }, ct);
+            return;
+        }
+
+        // Secure mode must only ever inject into Winlogon. The attach has to
+        // happen HERE, on the thread that will run SendInput — relays run on
+        // thread-pool threads, and the startup attach on the main thread does
+        // not cover them. When the active desktop is not Winlogon, refuse:
+        // a SYSTEM helper must never inject into the user session behind the
+        // user's back.
+        if (secure && SecureDesktop.AttachCurrentThreadToSecureInputDesktop() is null)
+        {
+            Log.Warn("refused: the input desktop is not Winlogon");
+            await WriteReplyAsync(server, new { ok = false }, ct);
+            return;
+        }
+
+        await WriteReplyAsync(server, new { ok = Execute(command) }, ct);
+    }
+
+    private static async Task WriteReplyAsync(NamedPipeServerStream server, object reply, CancellationToken ct)
+    {
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(reply));
+        await server.WriteAsync(BitConverter.GetBytes(bytes.Length), ct);
+        await server.WriteAsync(bytes, ct);
         await server.FlushAsync(ct);
     }
 

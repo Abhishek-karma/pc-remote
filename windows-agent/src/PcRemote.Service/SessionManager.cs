@@ -96,8 +96,10 @@ public sealed class SessionManager : IDisposable
             WTSRegisterSessionNotification(_hwnd, NOTIFY_FOR_ALL_SESSIONS);
             RefreshState();
 
-            // The timer only re-posts a message: every mutation of State
-            // and the helper handles stays on this STA thread.
+            // The timer only re-posts a message, which keeps WTS event handling
+            // on this STA thread. Mutations of State and the helper handles are
+            // additionally serialized by _stateLock, because the UAC poll (see
+            // ReportDesktopState) touches them from a pool thread.
             var timer = new System.Threading.Timer(
                 _ => PostMessage(_hwnd, WM_APP_REFRESH, IntPtr.Zero, IntPtr.Zero),
                 null, 500, 500);
@@ -188,36 +190,61 @@ public sealed class SessionManager : IDisposable
             {
                 Log.Info($"Desktop state: {State} -> {newState}");
                 _State = newState;
-                // Opportunistically (re)spawn helpers for the new reality.
-                switch (newState)
-                {
-                    case DesktopState.Normal:
-                        EnsureInputHelper(_consoleSessionId);
-                        break;
-                    case DesktopState.Locked:
-                    case DesktopState.Logon:
-                    case DesktopState.Secure:
-                        EnsureSecureHelper(_consoleSessionId);
-                        break;
-                }
             }
-            else
+
+            // Opportunistically (re)spawn helpers for the current reality —
+            // whether or not the state just changed: a helper that crashed (or
+            // was never launched) must be back within one tick.
+            switch (newState)
             {
-                // A helper that crashed (or was never launched) must be back
-                // within one tick.
-                switch (newState)
-                {
-                    case DesktopState.Normal:
-                        EnsureInputHelper(_consoleSessionId); // brings both helpers
-                        break;
-                    case DesktopState.Locked:
-                    case DesktopState.Logon:
-                    case DesktopState.Secure:
-                        EnsureSecureHelper(_consoleSessionId);
-                        break;
-                }
+                case DesktopState.Normal:
+                    EnsureInputHelper(_consoleSessionId); // brings both helpers
+                    break;
+                case DesktopState.Locked:
+                case DesktopState.Logon:
+                case DesktopState.Secure:
+                    EnsureSecureHelper(_consoleSessionId);
+                    break;
             }
         }
+
+        // UAC transitions emit no WTS event; while a user is on the normal
+        // desktop, ask the secure helper which desktop is active so a prompt
+        // is noticed within a tick or two.
+        PollSecureDesktop();
+    }
+
+    /// <summary>0 = no query in flight, 1 = one running. Prevents the 500 ms
+    /// timer from stacking pipe round trips when a helper is slow.</summary>
+    private int _pollInFlight;
+
+    private void PollSecureDesktop()
+    {
+        // While locked, on the logon screen or already in UAC, the state is
+        // known and input already routes to the secure helper.
+        if (!_userLoggedOn || _locked) return;
+
+        var helper = _secureHelper;
+        if (helper is not { IsAlive: true }) return;
+        if (Interlocked.CompareExchange(ref _pollInFlight, 1, 0) != 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var desktop = await helper.QueryDesktop();
+                if (desktop is not null) ReportDesktopState(desktop);
+            }
+            catch
+            {
+                // The helper may have died mid-query; the spawn loop brings it
+                // back and the next tick polls again.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pollInFlight, 0);
+            }
+        });
     }
 
     /// <summary>A session id we can actually launch a helper into.
@@ -286,11 +313,15 @@ public sealed class SessionManager : IDisposable
 
     private volatile bool _SecureActive;
 
-    /// <summary>Called from the IPC coordinator when the secure-input helper
-    /// reports the name of the active input desktop in the console session.</summary>
+    /// <summary>Called from the desktop poll when the secure-input helper
+    /// reports the name of the active input desktop in the console session.
+    /// Unchanged reports are dropped: a poll that calls back into RefreshState
+    /// on every answer would turn the 500 ms timer into a busy loop.</summary>
     public void ReportDesktopState(string desktopName)
     {
-        _SecureActive = string.Equals(desktopName, "Winlogon", StringComparison.OrdinalIgnoreCase);
+        var secure = string.Equals(desktopName, "Winlogon", StringComparison.OrdinalIgnoreCase);
+        if (secure == _SecureActive) return;
+        _SecureActive = secure;
         RefreshState();
     }
 

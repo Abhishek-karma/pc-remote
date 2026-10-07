@@ -38,6 +38,7 @@ public sealed class PcRemoteService : ServiceBase
 {
     private readonly CancellationTokenSource _cts = new();
     private SessionManager? _sessions;
+    private ControlChannel? _channel;
     private IpcServer? _ipc;
     private Task? _listener;
 
@@ -67,6 +68,7 @@ public sealed class PcRemoteService : ServiceBase
             // is showing; never read keystrokes or text.
             () => _sessions.State.ToString().ToLowerInvariant(),
             certificate);
+        _channel = channel;
 
         // Tray IPC: status, a fresh pairing code, and revoking devices. That is
         // the whole local control surface.
@@ -84,8 +86,12 @@ public sealed class PcRemoteService : ServiceBase
         Log.Info("service stopping");
         _cts.Cancel();
         _sessions?.Stop();
+        // Close the listener and send the mDNS goodbye BEFORE awaiting the
+        // listener task, so phones see the PC vanish instead of hanging.
+        _channel?.Stop();
         if (_ipc is not null) await _ipc.DisposeAsync();
-        try { if (_listener is not null) await _listener; } catch (OperationCanceledException) { }
+        try { if (_listener is not null) await _listener; }
+        catch (OperationCanceledException) { }
         Log.Info("service stopped");
     }
 

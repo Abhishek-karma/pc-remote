@@ -9,6 +9,7 @@
 // to an ELEVATED caller, so an unelevated tray says how to get it rather than
 // showing an empty value.
 
+using System.Diagnostics;
 using PcRemote.Core;
 
 namespace PcRemote.Tray;
@@ -46,7 +47,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.ContextMenuStrip = menu;
         _tray.Visible = true;
 
-        _startupItem.CheckedChanged += (_, _) => StartupToggle.Set(_startupItem.Checked);
+        _startupItem.CheckedChanged += (_, _) =>
+        {
+            if (StartupToggle.Set(_startupItem.Checked)) return;
+            // Creating the task needs elevation; an unelevated tray cannot do it.
+            _startupItem.Checked = !_startupItem.Checked;
+            MessageBox.Show(
+                "The tray could not change its startup setting. Run the tray as administrator and try again.",
+                "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        };
         _poll.Tick += async (_, _) => await RefreshAsync();
         _poll.Start();
 
@@ -175,25 +184,73 @@ internal static class ServiceIpc
     }
 }
 
-/// <summary>Tray autostart (HKCU Run). Purely cosmetic: the SERVICE is managed by
-/// the SCM and starts with Windows whether or not this tray ever runs.</summary>
+/// <summary>Tray autostart. A scheduled task at highest runlevel rather than an
+/// HKCU Run entry: the task starts the tray with the user's ADMINISTRATOR token
+/// without a UAC prompt, which is what lets it see the pairing code and use the
+/// privileged tray actions (the service only discloses the code to an elevated
+/// caller). Purely cosmetic for the service itself, which the SCM starts
+/// regardless.</summary>
 internal static class StartupToggle
 {
-    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "PC Remote Tray";
+    private const string TaskName = "PC Remote Tray";
 
     public static bool IsEnabled()
     {
-        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey);
-        return key?.GetValue(ValueName) is string;
+        try
+        {
+            using var proc = Run("/query", $"/tn \"{TaskName}\"");
+            return proc?.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
-    public static void Set(bool enabled)
-    {
-        using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey);
-        var exe = Environment.ProcessPath ?? Application.ExecutablePath;
+    /// <summary>True when the task was created or deleted. Creating requires an
+    /// elevated caller; an unelevated tray reports the failure to the user.</summary>
+    public static bool Set(bool enabled) => enabled ? CreateTask() : DeleteTask();
 
-        if (enabled) key.SetValue(ValueName, $"\"{exe}\" --minimized");
-        else key.DeleteValue(ValueName, throwOnMissingValue: false);
+    private static bool CreateTask()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath ?? Application.ExecutablePath;
+            using var proc = Run("/create /f /sc onlogon /rl highest",
+                $"/tn \"{TaskName}\" /tr \"\\\"{exe}\\\" --minimized\"");
+            return proc?.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool DeleteTask()
+    {
+        try
+        {
+            // A task that does not exist is already the goal state; deleting a
+            // missing task returns an error that must not look like a failure.
+            if (!IsEnabled()) return true;
+            using var proc = Run("/delete /f", $"/tn \"{TaskName}\"");
+            return proc?.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static Process? Run(string arguments, string more)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.SystemDirectory, "schtasks.exe"),
+            Arguments = $"{arguments} {more}",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        };
+        return Process.Start(psi);
     }
 }

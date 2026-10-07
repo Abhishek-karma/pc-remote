@@ -4,9 +4,11 @@
 ;   * Installs to C:\Program Files\PC Remote\  (protected path)
 ;   * Registers PCRemoteService with the SCM: automatic start, recovery restart
 ;   * Creates least-exposure firewall rules (private/domain profiles, LAN subnet)
-;   * Optional tray autostart (HKCU Run — cosmetic only; the service does not
-;     depend on the tray)
-;   * Cleans up the legacy self-install (LocalAppData copy + HKCU Run entry)
+;   * Optional tray autostart as a SCHEDULED TASK at highest runlevel (no UAC
+;     prompt at logon): the tray then runs elevated, so the service will show
+;     it the pairing code. An HKCU Run entry starts the tray unelevated, where
+;     the code is withheld.
+;   * Cleans up the legacy self-install (LocalAppData copy + HKCU Run entries)
 ;   * Full upgrade + uninstall support via the stable AppId
 ;
 ; Build:  installer\build.ps1  (publishes binaries into installer\staging,
@@ -51,7 +53,7 @@ DisableDirPage=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "trayautostart"; Description: "Show the PC Remote tray icon after logon"; \
+Name: "trayautostart"; Description: "Show the PC Remote tray icon after logon (with access to the pairing code)"; \
     GroupDescription: "Startup:"; Flags: checkedonce
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
     GroupDescription: "Shortcuts:"; Flags: unchecked
@@ -61,9 +63,12 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
 Source: "staging\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-; Service-owned data directory, least privilege: SYSTEM full, Admins modify.
-; No Users entry at all — DPAPI LocalMachine blobs (pairing tokens) are
-; decryptable by any local process, so the directory must not be world-readable.
+; Service-owned data directory. The explicit ACEs ADD to whatever Windows
+; inherits here (ProgramData defaults leave Users with read and create-file
+; rights), so the runtime also hardens the trust files themselves: the DPAPI
+; LocalMachine blobs are decryptable by any local process that can READ them,
+; and the service restricts paired-devices.dat and server-cert.dat to
+; SYSTEM/Admins on every write (FilePermissions).
 ; Access types for [Dirs] are full|modify|readexec only.
 Name: "{commonappdata}\PCRemote"; Permissions: "System-full Admins-modify"
 
@@ -72,10 +77,8 @@ Name: "{group}\PC Remote"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\PC Remote"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-; Tray autostart (optional, per-user, cosmetic only).
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-    ValueName: "PC Remote Tray"; ValueData: """{app}\{#MyAppExeName}"" --minimized"; \
-    Tasks: trayautostart; Flags: uninsdeletevalue
+; No tray autostart entry here: the tray registers a scheduled task instead
+; (see [Run]), which starts it elevated so the pairing code is visible.
 
 [Run]
 ; Delete first: on an upgrade the service already exists and "sc create" fails
@@ -93,6 +96,9 @@ Filename: "{sys}\sc.exe"; Parameters: "failureflag PCRemoteService 1"; Flags: ru
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PC Remote Agent"""; Flags: runhidden; StatusMsg: "Removing legacy firewall rules…"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""PC Remote Service (LAN, private)"" dir=in action=allow protocol=TCP localport=58642 profile=private,domain remoteip=localsubnet enable=yes"; Flags: runhidden; StatusMsg: "Creating firewall rule (control channel)…"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""PC Remote mDNS (LAN, private)"" dir=in action=allow protocol=UDP localport=5353 profile=private,domain remoteip=localsubnet enable=yes"; Flags: runhidden; StatusMsg: "Creating firewall rule (discovery)…"
+; --- Optional tray autostart: scheduled task, highest runlevel, no UAC prompt
+;     at logon. The elevated tray is what lets the user read the pairing code.
+Filename: "{sys}\schtasks.exe"; Parameters: "/create /f /sc onlogon /rl highest /tn ""PC Remote Tray"" /tr ""\""{app}\{#MyAppExeName}"" --minimized"""; Tasks: trayautostart; Flags: runhidden; StatusMsg: "Registering tray autostart…"
 ; --- Start the service now ---
 Filename: "{sys}\net.exe"; Parameters: "start PCRemoteService"; Flags: runhidden; StatusMsg: "Starting PC Remote service…"
 ; Launch the tray UI once at the end of setup (per-user session).
@@ -102,6 +108,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch PC Remote"; Flags: nowai
 ; Stop + delete service
 Filename: "{sys}\net.exe"; Parameters: "stop PCRemoteService"; Flags: runhidden; RunOnceId: "StopSvc"
 Filename: "{sys}\sc.exe"; Parameters: "delete PCRemoteService"; Flags: runhidden; RunOnceId: "DelSvc"
+; Remove the tray autostart task (created by this or a previous install)
+Filename: "{sys}\schtasks.exe"; Parameters: "/delete /f /tn ""PC Remote Tray"""; Flags: runhidden; RunOnceId: "DelTrayTask"
 ; Remove firewall rules
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PC Remote Service (LAN, private)"""; Flags: runhidden; RunOnceId: "DelFwTcp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PC Remote mDNS (LAN, private)"""; Flags: runhidden; RunOnceId: "DelFwUdp"
@@ -122,6 +130,7 @@ var
 begin
   RunKey := 'Software\Microsoft\Windows\CurrentVersion\Run';
   RegDeleteValue(HKEY_CURRENT_USER, RunKey, 'PC Remote Agent');
+  RegDeleteValue(HKEY_CURRENT_USER, RunKey, 'PC Remote Tray');
   LegacyDir := ExpandConstant('{userappdata}') + '\..\Local\PCRemote';
   if DirExists(LegacyDir) then
     DelTree(LegacyDir, True, True, True);

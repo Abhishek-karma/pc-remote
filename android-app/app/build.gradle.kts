@@ -62,9 +62,9 @@ android {
     }
 
     testOptions {
-        // android.jar framework stubs return defaults in local unit tests
-        // (DiscoveryService runs against injected fakes, so no VM bytes are
-        // executed, but keep this on for safety).
+        // android.jar framework stubs return defaults in local unit tests;
+        // the tested logic (gestures, text diff, backoff) is pure Kotlin, but
+        // keep this on for safety.
         unitTests.isReturnDefaultValues = true
     }
 }

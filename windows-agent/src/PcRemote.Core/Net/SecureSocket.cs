@@ -98,7 +98,14 @@ public class SecureSocket : IDisposable
         await stream.FlushAsync(ct);
     }
 
-    public async Task<string?> ReceiveTextAsync()
+    public Task<string?> ReceiveTextAsync() => ReceiveTextAsync(Timeout.InfiniteTimeSpan);
+
+    /// <summary>Receives one text message. <paramref name="frameTimeout"/> bounds
+    /// the wait for EACH frame: a phone that left the Wi-Fi without closing its
+    /// socket (no FIN, no RST) must not wedge this reader — and its connection —
+    /// forever. Control frames count as liveness, so a phone that keeps its
+    /// WebSocket ping alive is never timed out even while the user is idle.</summary>
+    public async Task<string?> ReceiveTextAsync(TimeSpan frameTimeout)
     {
         // RFC 6455 §5.1: a text message may be split across a FIN text frame
         // followed by any number of continuation (0x0) frames. Previously `fin`
@@ -106,11 +113,16 @@ public class SecureSocket : IDisposable
         // which silently closed the connection mid-message.
         var message = new MemoryStream();
         var inMessage = false;
-        var messageOpcode = 0;
 
         while (true)
         {
-            var frame = await ReadFrameAsync();
+            (byte opcode, byte[] payload, bool fin)? frame;
+            try { frame = await ReadFrameAsync().WaitAsync(frameTimeout); }
+            catch (TimeoutException)
+            {
+                Log.Warn("peer stopped sending (idle timeout)");
+                return null;
+            }
             if (frame is null) return null;
             var (opcode, payload, fin) = frame.Value;
 
@@ -135,7 +147,6 @@ public class SecureSocket : IDisposable
             if (!inMessage)
             {
                 inMessage = true;
-                messageOpcode = opcode;
                 message.SetLength(0);
             }
             else if (opcode != 0x0)
@@ -157,7 +168,6 @@ public class SecureSocket : IDisposable
 
             var bytes = message.ToArray();
             inMessage = false;
-            if (messageOpcode != 0x1) continue; // binary: ignored by this protocol
 
             try
             {
@@ -259,9 +269,6 @@ public class SecureSocket : IDisposable
                 if (code is < 1000 or 1004 or 1005 or 1006 or 1015 or > 4999) return null;
             }
         }
-
-        // Control frames (close/ping/pong) must not be fragmented.
-        if (isControlFrame && !fin) return null;
 
         return (opcode, payload, fin);
     }

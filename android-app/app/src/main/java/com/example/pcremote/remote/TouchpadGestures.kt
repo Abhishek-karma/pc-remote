@@ -43,8 +43,9 @@ class TouchpadGestures(
     private val dragThresholdPx: Float = 8f,
     /** Touchpad pixels of vertical travel per scroll notch. */
     private val scrollPxPerNotch: Float = 40f,
-    /** How long a still finger rests before the button is held down. */
-    private val longPressMs: Long = 350,
+    /** How long a still finger rests before the button is held down. Read by
+     *  the touchpad, which owns the clock for it. */
+    val longPressMs: Long = 350,
 ) {
     private var holding = false
     private var multiTouch = false
@@ -89,6 +90,18 @@ class TouchpadGestures(
         }
     }
 
+    /**
+     * The finger has been down and still for [longPressMs]. Decided by the
+     * gesture state, not the clock: a finger that moved (pendingTap already
+     * cleared) or a second finger on the pad (multiTouch) is not a hold.
+     */
+    fun onLongPress(): Action? {
+        if (multiTouch || holding || !pendingTap) return null
+        pendingTap = false
+        holding = true
+        return Action.HoldStart
+    }
+
     /** A finger moved. [pointers] is how many are down now. */
     fun onMove(x: Float, y: Float, pointers: Int): Action? {
         val dx = x - lastX
@@ -115,8 +128,9 @@ class TouchpadGestures(
             return null
         }
 
-        // A tap in progress, or a held drag: no cursor movement either way.
-        if (pendingTap || holding) return null
+        // A tap in progress must not nudge the cursor. A HOLD, by contrast,
+        // exists to drag: movement is the point, and the cursor must follow.
+        if (pendingTap) return null
 
         return if (dx != 0f || dy != 0f) Action.Move(dx * sensitivity, dy * sensitivity) else null
     }

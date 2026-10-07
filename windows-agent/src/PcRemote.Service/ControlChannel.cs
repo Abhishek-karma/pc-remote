@@ -24,6 +24,12 @@ public sealed class ControlChannel
     /// handshake before it is dropped.</summary>
     private static readonly TimeSpan AuthTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>How long the command loop will wait for any frame. The phone
+    /// pings every 15 s, so three silent ping intervals means the phone is gone
+    /// (Wi-Fi drop, app killed) even though no TCP reset arrived. This is what
+    /// triggers release-all when a phone vanishes mid-drag.</summary>
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(45);
+
     /// <summary>Largest cursor or scroll delta accepted from the network.</summary>
     private const int MaxDelta = 20_000;
 
@@ -83,6 +89,14 @@ public sealed class ControlChannel
             }
         }
         catch (OperationCanceledException) { /* stopping */ }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Port already bound by a stray second copy, or the socket died:
+            // without this the listener task faults silently and the service
+            // looks healthy while deaf. (A listener closed during shutdown
+            // lands here too, but the filter keeps that quiet.)
+            Log.Error($"listener stopped: {ex.Message}");
+        }
     }
 
     public void Stop()
@@ -169,7 +183,9 @@ public sealed class ControlChannel
 
         while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
         {
-            var text = await socket.ReceiveTextAsync();
+            // Bounded per frame: a client that sends half a message and stalls
+            // must not hold the handshake loop (and its socket) forever.
+            var text = await socket.ReceiveTextAsync(AuthTimeout);
             if (text is null) return false;
 
             Message? request;
@@ -215,8 +231,8 @@ public sealed class ControlChannel
     {
         while (!ct.IsCancellationRequested)
         {
-            var text = await socket.ReceiveTextAsync();
-            if (text is null) return; // phone closed the socket
+            var text = await socket.ReceiveTextAsync(IdleTimeout);
+            if (text is null) return; // phone closed the socket, or went silent
 
             Message? message;
             try { message = JsonSerializer.Deserialize<Message>(text); }

@@ -87,16 +87,20 @@ class Connection(
 
     /**
      * Connects to [host]. [code] is only needed the first time; afterwards the
-     * saved token is used automatically.
+     * saved token is used automatically. [pcId] is a hint from discovery (the
+     * PC advertises its stable id over mDNS) that lets the saved token be found
+     * even when the host address changed; without it, what pairing learned
+     * about this host before is used.
      */
-    fun connect(host: String, code: String? = null) {
+    fun connect(host: String, code: String? = null, pcId: String? = null) {
         reconnect?.cancel()
         reconnect = null
 
-        // Switching to a different PC must not reuse the previous PC's id, or we
-        // would send one machine's token to another and pin against the wrong
-        // certificate.
-        if (host != this.host) pcId = null
+        // Resolve the PC's stable id: an explicit hint from discovery, else
+        // what pairing taught us about this host. Without it the token store -
+        // which is keyed by that id - stays unreadable and every reconnect
+        // would demand the six-digit code again.
+        this.pcId = pcId ?: paired.idForHost(host)
 
         this.host = host
         this.pairingCode = code
@@ -168,7 +172,19 @@ class Connection(
 
         val request = Request.Builder().url("wss://$target:$PORT/").build()
 
+        // OkHttp delivers onFailure/onClosed exactly once per socket, but a
+        // socket that fails after a successful welcome reaches callbacks on a
+        // connection whose continuation has already been resumed. Resuming a
+        // continuation twice throws, so every callback funnels through here.
+        val resumed = java.util.concurrent.atomic.AtomicBoolean(false)
+
         return suspendCancellableCoroutine { cont ->
+            fun resumeOnce(result: Boolean) {
+                if (resumed.compareAndSet(false, true)) {
+                    cont.resumeWith(Result.success(result))
+                }
+            }
+
             val ws = okHttp.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     val hello = Message(
@@ -196,13 +212,16 @@ class Connection(
                             pcId = id
                             if (message.token != null) paired.saveToken(id, message.token)
                             trust.takePending()?.let { paired.savePin(id, it) }
+                            // Remember which host this id answered on, so the
+                            // next connect can find the token without the code.
+                            paired.rememberHost(target, id)
 
                             _pcName.value = message.pcName.orEmpty()
                             _desktop.value = message.state ?: "normal"
                             _error.value = null
                             attempt = 0
                             _state.value = ConnectionState.CONNECTED
-                            cont.resumeWith(Result.success(true))
+                            resumeOnce(true)
                         }
 
                         Message.ERROR -> {
@@ -213,7 +232,7 @@ class Connection(
                             val needsUser = message.reason == "pairing_failed" ||
                                 message.reason == "not_paired"
                             if (needsUser) _state.value = ConnectionState.PAIRING
-                            cont.resumeWith(Result.success(false))
+                            resumeOnce(false)
                         }
                     }
                 }
@@ -221,14 +240,14 @@ class Connection(
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (socket === webSocket) {
                         fail("PC unavailable")
-                        cont.resumeWith(Result.success(false))
+                        resumeOnce(false)
                     }
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     if (socket === webSocket) {
                         if (!closedByUs) _error.value = "Disconnected"
-                        cont.resumeWith(Result.success(false))
+                        resumeOnce(false)
                     }
                 }
             })

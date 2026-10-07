@@ -1,23 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  PC Remote needs nothing but local network access:
+  PC Remote needs almost nothing from the system:
 
     INTERNET                 LAN sockets to the PC
     ACCESS_NETWORK_STATE     noticing when Wi-Fi drops, so we can reconnect
     CHANGE_WIFI_MULTICAST    a multicast lock, so mDNS discovery replies arrive
-    POST_NOTIFICATIONS       report a dropped connection (asked for at runtime)
 
-  There is no camera, microphone, storage or location permission, and the app
-  only ever talks to a PC on the local network.
+  There is no camera, microphone, storage, location or notification permission,
+  and the app only ever talks to a PC on the local network.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".PcRemoteApp"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

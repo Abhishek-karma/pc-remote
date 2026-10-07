@@ -14,12 +14,19 @@ import com.example.pcremote.settings.Settings
 enum class Screen { LIST, REMOTE, SETTINGS }
 
 /**
- * App state, owned by the Activity so it survives rotation.
+ * App state, owned by the Application so it survives the Activity being
+ * recreated (rotation, dark-mode switch, memory pressure). A new Activity
+ * re-attaches to the same live connection instead of dropping it.
  *
  * Deliberately one object rather than a layer of view models: there is one
  * connection, one discovery browse and one settings store, and none of them
  * needs a lifecycle of its own.
  */
+class PcRemoteApp : Application() {
+
+    val state: AppState by lazy { AppState(this) }
+}
+
 class AppState(application: Application) {
 
     private val paired = PairedStore(application)
@@ -46,8 +53,8 @@ class AppState(application: Application) {
         settings.haptics = value
     }
 
-    fun connect(host: String, code: String? = null) {
-        connection.connect(host, code)
+    fun connect(host: String, code: String? = null, pcId: String? = null) {
+        connection.connect(host, code, pcId)
         screen = Screen.REMOTE
     }
 
@@ -56,7 +63,9 @@ class AppState(application: Application) {
     }
 
     /** Paired PC ids, for the Settings "forget this PC" list. */
-    fun pairedNames(): List<String> = paired.pairedIds()
+    fun pairedIds(): List<String> = paired.pairedIds()
+
+    fun isPaired(pcId: String): Boolean = paired.isPaired(pcId)
 
     fun forget(pcId: String) = paired.forget(pcId)
 }

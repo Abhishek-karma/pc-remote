@@ -30,6 +30,7 @@ public sealed class PairingStore
     public static string LogDir => Path.Combine(DataDir, "logs");
 
     private readonly string _tokensFile = Path.Combine(DataDir, "paired-devices.dat");
+    private static string LegacyTokensFile => Path.Combine(DataDir, "trusted-devices.json");
     private readonly object _gate = new();
     private readonly HashSet<string> _tokens = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Failures, DateTime BlockedUntil)> _blocked = new(StringComparer.Ordinal);
@@ -137,17 +138,52 @@ public sealed class PairingStore
     {
         try
         {
-            if (!File.Exists(_tokensFile)) return;
-            var plain = ProtectedData.Unprotect(File.ReadAllBytes(_tokensFile), null, DataProtectionScope.LocalMachine);
-            var saved = JsonSerializer.Deserialize<string[]>(plain);
-            if (saved is not null)
-                lock (_gate) _tokens.UnionWith(saved);
+            if (File.Exists(_tokensFile))
+            {
+                var protectedBytes = File.ReadAllBytes(_tokensFile);
+                var plain = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.LocalMachine);
+                var saved = JsonSerializer.Deserialize<string[]>(plain);
+                if (saved is not null)
+                    lock (_gate) _tokens.UnionWith(saved);
+            }
         }
         catch (Exception ex)
         {
             // Most likely a changed data-dir ACL or a rotated DPAPI key. Either
             // way, treating every phone as unpaired is the safe reading.
             Log.Error($"could not read paired devices ({ex.Message}); all phones must pair again");
+        }
+
+        MigrateLegacyTokenStore();
+    }
+
+    /// <summary>The pre-0.2.1 store kept tokens as plaintext JSON, readable by
+    /// every local user. Import them once so an upgrade does not unpair the
+    /// user's phone, then delete the plaintext file. Only runs when no DPAPI
+    /// store exists yet — the encrypted store, when present, is authoritative.</summary>
+    private void MigrateLegacyTokenStore()
+    {
+        try
+        {
+            if (!File.Exists(LegacyTokensFile)) return;
+            var tokens = JsonSerializer.Deserialize<string[]>(File.ReadAllText(LegacyTokensFile));
+            if (tokens is { Length: > 0 })
+            {
+                lock (_gate)
+                {
+                    if (_tokens.Count > 0) return;
+                    _tokens.UnionWith(tokens);
+                    Save();
+                }
+            }
+            // Delete only after Save() actually wrote the encrypted file, so a
+            // failed write can never lose trust material.
+            if (File.Exists(_tokensFile)) File.Delete(LegacyTokensFile);
+            Log.Info("migrated the legacy token store into the encrypted format");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"legacy token store migration failed ({ex.Message}); the plaintext file stays");
         }
     }
 
@@ -160,10 +196,14 @@ public sealed class PairingStore
             var bytes = ProtectedData.Protect(plain, null, DataProtectionScope.LocalMachine);
 
             // Write-then-rename: a crash mid-write must not destroy the trust
-            // store and force every phone to re-pair.
+            // store and force every phone to re-pair. The ACL is applied to the
+            // temp file before the rename because the renamed file keeps the
+            // source's security descriptor.
             var temp = _tokensFile + ".tmp";
             File.WriteAllBytes(temp, bytes);
+            FilePermissions.RestrictToSystemAndAdmins(temp);
             File.Move(temp, _tokensFile, overwrite: true);
+            FilePermissions.RestrictToSystemAndAdmins(_tokensFile);
         }
         catch (Exception ex)
         {

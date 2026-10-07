@@ -38,6 +38,9 @@ public static class CertificateManager
                 var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.LocalMachine);
                 var cert = new X509Certificate2(pfx);
                 Log.Info($"TLS certificate loaded (thumbprint {cert.Thumbprint})");
+                // Harden an existing file that may predate the per-file ACL
+                // (ProgramData inheritance leaves it readable by Users).
+                FilePermissions.RestrictToSystemAndAdmins(CertFile);
                 return cert;
             }
         }
@@ -74,19 +77,6 @@ public static class CertificateManager
         }
     }
 
-    /// <summary>True when the certificate can be used for TLS server auth.</summary>
-    public static bool IsUsableForServerAuth(X509Certificate2? cert)
-    {
-        if (cert is null) return false;
-        using var chain = new X509Chain();
-        // We only validate that the key matches and the cert is time-valid;
-        // self-signed chain errors are expected and handled by client pinning.
-        chain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
-        return cert.NotBefore <= DateTimeOffset.UtcNow
-            && cert.NotAfter >= DateTimeOffset.UtcNow
-            && cert.HasPrivateKey;
-    }
-
     private static X509Certificate2 CreateSelfSigned()
     {
         using var rsa = RSA.Create(2048);
@@ -118,6 +108,7 @@ public static class CertificateManager
         var protectedBytes = ProtectedData.Protect(pfx, null, DataProtectionScope.LocalMachine);
         Directory.CreateDirectory(PairingStore.DataDir);
         File.WriteAllBytes(CertFile, protectedBytes);
+        FilePermissions.RestrictToSystemAndAdmins(CertFile);
         Log.Info($"TLS certificate created and saved to {CertFile}");
     }
 }

@@ -55,13 +55,31 @@ class PairedStore(context: Context) {
             .remove(key("token", pcId))
             .remove(key("pin", pcId))
             .apply()
+        // Drop host entries that point at the forgotten PC, or a later connect
+        // would silently send a token the PC has just revoked.
+        prefs.all.keys
+            .filter { it.startsWith(HOST_PREFIX) && prefs.getString(it, null) == pcId }
+            .forEach { prefs.edit().remove(it).apply() }
+    }
+
+    /** The PC id we last paired with at [host]. This is what lets a reconnect
+     *  use the saved token instead of the six-digit code: the token is keyed by
+     *  the PC's stable id, which the phone only learns after the PC says who it
+     *  is - so the pairing flow records the answer for next time. */
+    fun idForHost(host: String): String? = prefs.getString(hostKey(host), null)
+
+    fun rememberHost(host: String, pcId: String) {
+        prefs.edit().putString(hostKey(host), pcId).apply()
     }
 
     private fun key(kind: String, pcId: String) = "$kind$pcId"
 
+    private fun hostKey(host: String) = "$HOST_PREFIX$host"
+
     private companion object {
         const val FILE = "pc_remote_paired"
         const val TOKEN_PREFIX = "token:"
+        const val HOST_PREFIX = "host:"
 
         fun encrypted(context: Context): SharedPreferences {
             val masterKey = MasterKey.Builder(context)

@@ -23,14 +23,18 @@ object TextDiff {
             // Characters were appended: send only the new ones.
             updated.removePrefix(previous)
 
-        updated.length < previous.length && updated.startsWith(updated) ->
+        updated.length < previous.length && previous.startsWith(updated) ->
             // Characters were deleted from the end: tell the PC to delete back.
+            // The prefix test must be the PREVIOUS text, not the updated one -
+            // a deletion from the middle (moving the cursor, then backspacing)
+            // is not a prefix, and misreporting it as one would leave the PC's
+            // text different from the phone's forever.
             "\b".repeat(previous.length - updated.length)
 
         updated == previous -> null
 
-        // A replacement (autocorrect, or picking a suggestion) has no natural
-        // incremental form, so clear the line and retype it.
+        // A replacement or a middle deletion has no natural incremental form,
+        // so clear the line and retype it.
         else -> "\b".repeat(previous.length) + updated
     }
 }

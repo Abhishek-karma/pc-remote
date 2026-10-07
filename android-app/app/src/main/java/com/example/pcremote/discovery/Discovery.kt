@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
-import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +14,9 @@ data class DiscoveredPc(
     val name: String,
     val host: String,
     val port: Int,
+    /** The PC's stable identity from its mDNS TXT record. Lets the app use a
+     *  saved token on the very first connect to an address it has never seen. */
+    val pcId: String? = null,
 )
 
 enum class DiscoveryStatus { SEARCHING, FAILED }
@@ -49,7 +51,6 @@ class Discovery(context: Context) {
     /** Names seen in a browse but not yet resolved. mDNS gives us a name first
      *  and the address only after an explicit resolve. */
     private val found = mutableMapOf<String, NsdServiceInfo>()
-    private val waiting = mutableListOf<String>()
 
     private var resolving = false
 
@@ -60,7 +61,6 @@ class Discovery(context: Context) {
         _status.value = DiscoveryStatus.SEARCHING
         _pcs.value = emptyList()
         found.clear()
-        waiting.clear()
 
         // Without this lock many routers silently drop our multicast replies.
         try {
@@ -103,7 +103,6 @@ class Discovery(context: Context) {
         listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
         listener = null
         found.clear()
-        waiting.clear()
         resolving = false
         releaseMulticast()
     }
@@ -122,8 +121,7 @@ class Discovery(context: Context) {
     private fun resolveNext() {
         if (resolving) return
 
-        val name = waiting.firstOrNull() ?: found.keys.firstOrNull() ?: return
-        waiting.remove(name)
+        val name = found.keys.firstOrNull() ?: return
         val info = found[name] ?: return
 
         resolving = true
@@ -139,17 +137,17 @@ class Discovery(context: Context) {
             override fun onServiceResolved(resolved: NsdServiceInfo) {
                 val address = resolved.host?.hostAddress?.substringBefore('%')
                 if (address != null) {
-                    val advertised = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        resolved.attributes?.get("name")?.let { String(it, Charsets.UTF_8) }
-                    } else {
-                        null
-                    }
+                    fun attribute(key: String): String? =
+                        resolved.attributes?.get(key)?.let { String(it, Charsets.UTF_8) }
 
                     val pc = DiscoveredPc(
                         serviceName = resolved.serviceName,
-                        name = advertised ?: resolved.serviceName,
+                        // TXT "name" is the human label; the instance name is
+                        // truncated on some resolvers.
+                        name = attribute("name") ?: resolved.serviceName,
                         host = address,
                         port = resolved.port,
+                        pcId = attribute("pcid"),
                     )
                     _pcs.value = (_pcs.value.filterNot { it.serviceName == pc.serviceName } + pc)
                         .sortedBy { it.name.lowercase() }

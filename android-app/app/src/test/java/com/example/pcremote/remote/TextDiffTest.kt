@@ -46,6 +46,14 @@ class TextDiffTest {
     }
 
     @Test
+    fun `deleting from the middle clears and retypes`() {
+        // "ac" is not a prefix of "abc": a single backspace here would leave
+        // the PC showing "ab" while the phone shows "ac", forever. The rule
+        // this guards: only a deletion FROM THE END may be sent as backspaces.
+        assertEquals("\b\b\bac", TextDiff.between("abc", "ac"))
+    }
+
+    @Test
     fun `no change sends nothing at all`() {
         assertNull(TextDiff.between("hi", "hi"))
     }

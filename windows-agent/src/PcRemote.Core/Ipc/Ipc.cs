@@ -150,10 +150,16 @@ public sealed class IpcServer : IAsyncDisposable
         {
             reply = _handler(request);
             // Privilege is enforced here rather than inside each handler so no
-            // future handler can forget the check.
+            // future handler can forget the check. Status stays readable by any
+            // local user — but the pairing code, which IS pairing authority,
+            // is withheld from an unelevated caller.
             if (!elevated && request.Type is not "status")
             {
                 reply = new IpcMessage { Type = request.Type, Error = "elevation_required" };
+            }
+            else if (!elevated)
+            {
+                reply.PairingCode = null;
             }
         }
         catch (Exception ex)
@@ -185,7 +191,12 @@ public sealed class IpcServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
-        try { if (_loop is not null) await _loop; } catch (OperationCanceledException) { }
+        try { if (_loop is not null) await _loop; }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // Normal teardown: the wait was cancelled, or the pipe instance was
+            // disposed under the accept loop.
+        }
         _cts.Dispose();
     }
 }

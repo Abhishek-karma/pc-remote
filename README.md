@@ -30,8 +30,10 @@ product.
 That is the whole setup. There is no port to configure and no server to start by
 hand.
 
-To uninstall, use Windows "Apps" as usual. The service, the firewall rule and the
-stored pairing data are all removed.
+To uninstall, use Windows "Apps" as usual. The service and the firewall rules
+are removed. Pairing data is kept on purpose, so reinstalling does not force
+every phone to pair again; delete the `C:\ProgramData\PCRemote` folder if you
+want it gone.
 
 ### Android
 
@@ -43,13 +45,15 @@ stored pairing data are all removed.
 The first time:
 
 1. Open **PC Remote** on the PC (tray icon) to see a six-digit pairing code.
-   If the tray is not running as administrator, right-click it and choose
-   "Run as administrator" to see the code.
+   When the tray is started by Windows (the installer's default), it runs with
+   administrator rights and shows the code. If you started the tray by hand
+   without elevation, right-click it and choose "Run as administrator".
 2. On the phone, tap the PC in the list.
 3. Type the code.
 
 After that the code is never needed again. The phone keeps a token for the PC and
-reconnects on its own.
+reconnects on its own - including after the phone's app was closed, the PC's IP
+changed, or both machines restarted.
 
 To unpair a phone, use "Revoke all paired phones" in the tray menu, or "Forget"
 in the app's Settings.
@@ -84,7 +88,7 @@ PC to clear any stuck modifier.
 - Traffic is TLS on the local network only. The PC generates its own certificate
   once and keeps it; the phone pins its fingerprint when you pair.
 - If a PC's certificate changes after pairing, the phone refuses to connect.
-- Pairing uses a six-digit code that expires after five minutes.
+- Pairing uses a six-digit code that changes every minute.
 - Failed pairing attempts are rate limited per IP address.
 - Tokens and pins are stored in encrypted storage (DPAPI on Windows, the Android
   Keystore on the phone).
@@ -160,12 +164,10 @@ a feature, and it is deliberately isolated:
   `Winlogon` desktop.
 - It receives already-authenticated, already-validated commands and injects them.
   It never talks to the network and never stores a credential.
+- The service notices UAC prompts by asking the SYSTEM helper which desktop is
+  active, and routes input to the helper attached to `Winlogon` while one is up.
 - When the desktop is not reachable, the service tells the phone instead of
   silently dropping input.
-
-Windows blocks lower-integrity processes from sending input to an elevated window
-and does not allow that to be worked around for a normal application, so UAC
-prompts accept keypresses but the mouse cannot click "Yes" on them.
 
 ## Building from source
 

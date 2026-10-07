@@ -131,10 +131,44 @@ public sealed class InputHelper
     public Task Key(string key, string action) => Relay("key", new { key, action });
     public Task Text(string text) => Relay("text", new { text });
     public Task ReleaseAll() => Relay("release_all", new { });
+
+    /// <summary>Asks the helper which desktop is currently receiving input.
+    /// Answered by the secure helper with "Winlogon" or "Default"; the session
+    /// manager polls this to notice UAC prompts, which emit no WTS event.</summary>
+    public async Task<string?> QueryDesktop()
+    {
+        var reply = await RoundTrip("desktop", new { });
+        if (reply is null) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(reply);
+            return document.RootElement.TryGetProperty("desktop", out var name) ? name.GetString() : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
     /// <summary>Sends one command and waits for the helper's "did it work"
-    /// answer. A failed relay is logged (not per mouse move) and reported as
-    /// false rather than thrown: dropped input beats a dead listener.</summary>
+    /// answer. A failed relay is reported as false rather than thrown: dropped
+    /// input beats a dead listener. Move and scroll failures are not logged —
+    /// they arrive in a continuous stream, so a dead helper mid-drag would
+    /// flood the log; the session manager respawns the helper within one tick.</summary>
     private async Task<bool> Relay(string op, object payload)
+    {
+        var reply = await RoundTrip(op, payload);
+        if (reply is null) return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(reply);
+            return document.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<byte[]?> RoundTrip(string op, object payload)
     {
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { op, payload }));
 
@@ -150,15 +184,14 @@ public sealed class InputHelper
 
             var lengthBytes = await ReadExactlyAsync(pipe, 4, cts.Token);
             var length = BitConverter.ToInt32(lengthBytes);
-            if (length is <= 0 or > 4096) return false;
+            if (length is <= 0 or > 4096) return null;
 
-            using var document = JsonDocument.Parse(await ReadExactlyAsync(pipe, length, cts.Token));
-            return document.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean();
+            return await ReadExactlyAsync(pipe, length, cts.Token);
         }
         catch (Exception ex)
         {
-            Log.Warn($"relay '{op}' failed: {ex.GetType().Name}");
-            return false;
+            if (op is not ("move" or "scroll")) Log.Warn($"relay '{op}' failed: {ex.GetType().Name}");
+            return null;
         }
     }
 
