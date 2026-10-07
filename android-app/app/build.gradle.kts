@@ -14,14 +14,14 @@ android {
         targetSdk = 35
         // CI injects these from the git tag.
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
-        versionName = (project.findProperty("versionName") as String?) ?: "1.0.0"
+        versionName = (project.findProperty("versionName") as String?) ?: "0.2.2"
     }
 
     signingConfigs {
         create("release") {
             // Signing material comes from env vars only — never committed
-            // (ANDROID_KEYSTORE_FILE/PASSWORD, ANDROID_KEY_ALIAS/KEY_PASSWORD;
-            // docs/15-DEPLOYMENT.md §5). Unset → release builds are unsigned.
+            // (ANDROID_KEYSTORE_FILE/PASSWORD, ANDROID_KEY_ALIAS/KEY_PASSWORD).
+            // Unset → release builds are unsigned.
             val storePath = System.getenv("ANDROID_KEYSTORE_FILE")
             if (!storePath.isNullOrBlank()) {
                 storeFile = file(storePath)

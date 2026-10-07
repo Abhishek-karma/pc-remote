@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>PcRemote.Tray</RootNamespace>
     <AssemblyName>PCRemoteTray</AssemblyName>
-    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionPrefix>0.2.2</VersionPrefix>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
     <Product>PC Remote</Product>
