@@ -64,6 +64,18 @@ if (-not $iscc) {
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 $setup = Join-Path $repoRoot "dist\PC-Remote-Setup.exe"
+
+# --- Sign the installer itself (production) ---
+# Validate-Release.ps1 checks the Authenticode signature of the final setup
+# EXE, so sign it after Inno Setup produces it (the .iss SignTool directive
+# stays disabled; signing happens here where the cert env vars are known).
+if ($env:WINDOWS_CERT_PATH -and $env:WINDOWS_CERT_PASSWORD -and (Test-Path $setup)) {
+    Write-Host "Signing installer…"
+    & signtool.exe sign /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD `
+        /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $setup
+    if ($LASTEXITCODE -ne 0) { throw "signing installer failed" }
+}
+
 if (Test-Path $setup) {
     $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -Path "$setup.sha256" -Value "$hash  PC-Remote-Setup.exe" -NoNewline

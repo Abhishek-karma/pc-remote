@@ -36,31 +36,50 @@ jobs:
           dotnet build PcRemoteAgent.slnx --no-restore --nologo
           dotnet test src/PcRemote.Tests/PcRemote.Tests.csproj --no-restore --no-build --nologo
 
+      - name: Provision signing certificate
+        id: cert
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) {
+            # A tag build is a production release: it must not ship unsigned
+            # (development builds built by windows-agent-ci may).
+            Write-Error "No signing certificate configured (WINDOWS_CERT_PFX_BASE64 secret); refusing to publish an unsigned production release."
+            exit 1
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "pc-remote-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          # A self-signed code-signing cert only reports 'Valid' to
+          # Get-AuthenticodeSignature once its root is trusted on this machine.
+          $secure = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\LocalMachine\Root -Password $secure | Out-Null
+          echo "cert_path=$pfx" >> $env:GITHUB_OUTPUT
+
       - name: Build installer
         id: build
         shell: pwsh
         env:
-          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
+          WINDOWS_CERT_PATH: ${{ steps.cert.outputs.cert_path }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           RELEASE_VERSION: ${{ steps.ver.outputs.version }}
         run: >
           ./installer/build.ps1
           -Version "$env:RELEASE_VERSION"
-        # WINDOWS_CERT_PATH/PASSWORD may point to a keyfile checked into the
-        # secret store; when absent the build warns and ships unsigned.
+        # The PFX is materialized from WINDOWS_CERT_PFX_BASE64 by the step above;
+        # WINDOWS_CERT_PATH points at that file.
 
-      # The secrets context is not available in step-level `if:` — the
-      # certificate presence check happens inside the script via env instead.
+      # Certificate presence is enforced by the "Provision signing certificate"
+      # step; this step only validates signatures/publisher/version.
       - name: Validate staged executables (signature/publisher/version)
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.ver.outputs.version }}
-          WINDOWS_CERT_PATH: ${{ secrets.WINDOWS_CERT_PATH }}
+          WINDOWS_CERT_PATH: ${{ steps.cert.outputs.cert_path }}
         run: |
           if (-not $env:WINDOWS_CERT_PATH) {
-            # A tag build is a production release: it must not ship unsigned
-            # (development builds built by windows-agent-ci may).
-            throw "No signing certificate configured (WINDOWS_CERT_PATH secret); refusing to publish an unsigned production release."
+            throw "No signing certificate provisioned (WINDOWS_CERT_PATH empty); refusing to validate an unsigned production release."
           }
           $staged = @("PCRemoteService.exe","PCRemoteInput.exe","PCRemoteTray.exe") |
             ForEach-Object { Get-AuthenticodeSignature "installer/staging/$_" }
