@@ -186,6 +186,15 @@ cd android-app
 ./gradlew testDebugUnitTest
 ```
 
+## Releasing
+
+Pushing a `v*` tag triggers the release workflow, which builds, signs and
+publishes the Windows installer and Android APK to the GitHub Release. It
+requires code-signing secrets to be configured on the repository.
+
+See **[RELEASE.md](RELEASE.md)** for the full release flow and how to generate
+the Windows and Android signing material.
+
 ## Licence
 
 MIT.
