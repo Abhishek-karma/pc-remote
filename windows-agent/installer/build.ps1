@@ -24,6 +24,30 @@ $projects = @(
 
 $selfContainedFlag = if ($SelfContained) { "-p:SelfContained=true" } else { "-p:SelfContained=false" }
 
+# signtool.exe ships with the Windows SDK and is not on PATH on either the
+# GitHub runner or a plain PowerShell session — only in a developer prompt.
+function Resolve-SignTool {
+    $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $candidates = @()
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path $kitsRoot) {
+        # Newest SDK version first (10.0.26100.0 sorts above 10.0.22621.0).
+        $candidates += Get-ChildItem $kitsRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" }
+    }
+    $candidates += @(
+        (Join-Path $kitsRoot "x64\signtool.exe"),
+        (Join-Path $env:ProgramFiles "Windows Kits\10\bin\x64\signtool.exe")
+    )
+    $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $found) {
+        throw "signtool.exe not found; install the Windows SDK (https://developer.microsoft.com/windows/downloads/windows-sdk/)"
+    }
+    return $found
+}
+
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item $staging -ItemType Directory | Out-Null
 
@@ -38,9 +62,10 @@ foreach ($proj in $projects) {
 
 # --- Signing (production) ---
 if ($env:WINDOWS_CERT_PATH -and $env:WINDOWS_CERT_PASSWORD) {
+    $signtool = Resolve-SignTool
     Write-Host "Signing staged executables…"
     Get-ChildItem $staging -Filter *.exe | ForEach-Object {
-        & signtool.exe sign /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD `
+        & $signtool sign /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD `
             /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $_.FullName
         if ($LASTEXITCODE -ne 0) { throw "signing failed: $($_.Name)" }
     }
@@ -70,8 +95,9 @@ $setup = Join-Path $repoRoot "dist\PC-Remote-Setup.exe"
 # EXE, so sign it after Inno Setup produces it (the .iss SignTool directive
 # stays disabled; signing happens here where the cert env vars are known).
 if ($env:WINDOWS_CERT_PATH -and $env:WINDOWS_CERT_PASSWORD -and (Test-Path $setup)) {
+    $signtool = Resolve-SignTool
     Write-Host "Signing installer…"
-    & signtool.exe sign /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD `
+    & $signtool sign /f $env:WINDOWS_CERT_PATH /p $env:WINDOWS_CERT_PASSWORD `
         /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $setup
     if ($LASTEXITCODE -ne 0) { throw "signing installer failed" }
 }
