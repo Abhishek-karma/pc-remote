@@ -44,6 +44,14 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; DisableDirPage is the documented directive for this - "DefaultDirNameFixed"
 ; is not an Inno Setup directive and was silently ineffective.
 DisableDirPage=yes
+; Validate-Release.ps1 checks the installer's FileVersion against the release
+; tag, so the setup EXE must carry a version resource. AppVersion alone does
+; not populate it - VersionInfoVersion / VersionInfoProductVersion do.
+VersionInfoDescription=PC Remote Setup
+VersionInfoProductName=PC Remote
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
 
 ; Production signing — uncomment with real values in CI:
 ;SignTool=signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $f
