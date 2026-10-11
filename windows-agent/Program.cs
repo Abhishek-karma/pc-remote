@@ -163,6 +163,74 @@ public static class Program
         shutdown.Cancel();
     }
 
+    /// <summary>
+    /// Frees the TCP listener port from our own components so the agent can
+    /// bind after a collision (legacy PCRemoteService or a stale agent).
+    /// Only PC Remote processes are stopped; unknown owners are left alone.
+    /// Returns true when something was stopped and the caller should retry.
+    /// </summary>
+    private static bool TryFreePort(int port)
+    {
+        var freed = false;
+        try
+        {
+            // 1) Legacy Windows service from older installs: stop + disable so it
+            //    cannot reclaim the port on the next boot.
+            var svc = RunCapture("powershell",
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "if (Get-Service -Name 'PCRemoteService') { Write-Output 'yes' }");
+            if (svc.Contains("yes"))
+            {
+                RunCapture("powershell",
+                    "-NoProfile -Command \"Stop-Service -Name 'PCRemoteService' -Force; " +
+                    "Set-Service -Name 'PCRemoteService' -StartupType Disabled\"");
+                freed = true;
+            }
+
+            // 2) Any other process listening on the port that is one of ours.
+            var owners = RunCapture("powershell",
+                "$ErrorActionPreference='SilentlyContinue'; " +
+                "Get-NetTCPConnection -LocalPort " + port + " -State Listen | " +
+                "ForEach-Object { $p = Get-Process -Id $_.OwningProcess; " +
+                "if ($p) { Write-Output ($p.Id.ToString() + '|' + $p.Path) } }");
+            foreach (var line in owners.Split('\n'))
+            {
+                var parts = line.Trim().Split('|');
+                if (parts.Length != 2) continue;
+                if (!IsPcRemoteProcess(parts[1])) continue;
+                if (int.TryParse(parts[0].Trim(), out var pid))
+                {
+                    try { System.Diagnostics.Process.GetProcessById(pid).Kill(); freed = true; }
+                    catch { /* already exiting */ }
+                }
+            }
+
+            if (freed) System.Threading.Thread.Sleep(1000); // let the socket release
+        }
+        catch { /* best effort */ }
+        return freed;
+    }
+
+    private static bool IsPcRemoteProcess(string? path) =>
+        !string.IsNullOrEmpty(path) &&
+        (path.Contains("PCRemote", StringComparison.OrdinalIgnoreCase) ||
+         path.Contains("PC Remote", StringComparison.OrdinalIgnoreCase));
+
+    private static string RunCapture(string fileName, string arguments)
+    {
+        using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        });
+        proc?.WaitForExit(5000);
+        return proc?.StandardOutput.ReadToEnd() ?? "";
+    }
+
     public static async Task StartServerAsync(CancellationToken ct)
     {
         PairingCodeChanged?.Invoke(Pairing.GeneratePairingCode());
@@ -224,9 +292,40 @@ public static class Program
         }
         catch
         {
-            _listener = new TcpListener(IPAddress.Any, Port);
-            _listener.ExclusiveAddressUse = true;
-            _listener.Start();
+            try
+            {
+                _listener = new TcpListener(IPAddress.Any, Port);
+                _listener.ExclusiveAddressUse = true;
+                _listener.Start();
+            }
+            catch
+            {
+                // The port is held by another process (commonly a legacy
+                // PCRemoteService from an older install). Reclaim it from our
+                // own components, then retry once; otherwise fail loudly with
+                // the conflicting process named instead of wedging silently.
+                if (TryFreePort(Port))
+                {
+                    try
+                    {
+                        _listener = new TcpListener(IPAddress.IPv6Any, Port);
+                        _listener.Server.DualMode = true;
+                        _listener.ExclusiveAddressUse = true;
+                        _listener.Start();
+                    }
+                    catch
+                    {
+                        throw new InvalidOperationException(
+                            $"Port {Port} is still in use after reclaiming it from PC Remote components. Restart the agent.");
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Port {Port} is already in use by another application. " +
+                        "Close it (or remove the legacy PC Remote service) and restart the agent.");
+                }
+            }
         }
 
         while (!ct.IsCancellationRequested)

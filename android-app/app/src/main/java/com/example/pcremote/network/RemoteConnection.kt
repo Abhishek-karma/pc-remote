@@ -567,9 +567,78 @@ object EncryptedPrefs {
                     androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                 )
-            } catch (_: Exception) {
-                context.getSharedPreferences("pc_remote_prefs_fallback", android.content.Context.MODE_PRIVATE)
+            } catch (e: Exception) {
+                // Never fall back to plaintext prefs: tokens and cert pins would be
+                // written to disk unencrypted. Use an in-memory store instead so the
+                // app still works for this session without persisting secrets.
+                android.util.Log.e("EncryptedPrefs", "Encrypted prefs unavailable; using in-memory store (no persistence)", e)
+                InMemorySharedPreferences()
             }
+        }
+    }
+}
+
+/**
+ * Non-persisting [SharedPreferences] used only when [EncryptedSharedPreferences]
+ * is unavailable, so auth tokens and certificate pins are never written to disk
+ * in plaintext. Values live for the process lifetime only.
+ */
+private class InMemorySharedPreferences : android.content.SharedPreferences {
+    private val map = mutableMapOf<String, Any?>()
+    private val listeners = mutableListOf<android.content.SharedPreferences.OnSharedPreferenceChangeListener>()
+
+    override fun getAll(): Map<String, Any?> = HashMap(map)
+    override fun getString(key: String, defValue: String?): String? = map[key] as? String ?: defValue
+    override fun getStringSet(key: String, defValue: Set<String>?): Set<String>? = map[key] as? Set<String> ?: defValue
+    override fun getInt(key: String, defValue: Int): Int = map[key] as? Int ?: defValue
+    override fun getLong(key: String, defValue: Long): Long = map[key] as? Long ?: defValue
+    override fun getFloat(key: String, defValue: Float): Float = map[key] as? Float ?: defValue
+    override fun getBoolean(key: String, defValue: Boolean): Boolean = map[key] as? Boolean ?: defValue
+    override fun contains(key: String): Boolean = map.containsKey(key)
+    override fun edit(): android.content.SharedPreferences.Editor = Editor()
+
+    override fun registerOnSharedPreferenceChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        listeners.add(listener)
+    }
+
+    override fun unregisterOnSharedPreferenceChangeListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
+        listeners.remove(listener)
+    }
+
+    private fun notifyChanged(key: String) {
+        listeners.forEach { it.onSharedPreferenceChanged(this, key) }
+    }
+
+    inner class Editor : android.content.SharedPreferences.Editor {
+        private val pending = mutableMapOf<String, Any?>()
+        private val removals = mutableSetOf<String>()
+        private var clearAll = false
+
+        override fun putString(key: String, value: String?): android.content.SharedPreferences.Editor {
+            if (value == null) removals.add(key) else pending[key] = value
+            return this
+        }
+
+        override fun putStringSet(key: String, value: Set<String>?): android.content.SharedPreferences.Editor {
+            if (value == null) removals.add(key) else pending[key] = value
+            return this
+        }
+
+        override fun putInt(key: String, value: Int): android.content.SharedPreferences.Editor { pending[key] = value; return this }
+        override fun putLong(key: String, value: Long): android.content.SharedPreferences.Editor { pending[key] = value; return this }
+        override fun putFloat(key: String, value: Float): android.content.SharedPreferences.Editor { pending[key] = value; return this }
+        override fun putBoolean(key: String, value: Boolean): android.content.SharedPreferences.Editor { pending[key] = value; return this }
+        override fun remove(key: String): android.content.SharedPreferences.Editor { removals.add(key); return this }
+        override fun clear(): android.content.SharedPreferences.Editor { clearAll = true; return this }
+        override fun commit(): Boolean { apply(); return true }
+
+        override fun apply() {
+            if (clearAll) map.clear()
+            removals.forEach { map.remove(it) }
+            map.putAll(pending)
+            pending.keys.forEach { notifyChanged(it) }
+            removals.forEach { notifyChanged(it) }
+            pending.clear(); removals.clear(); clearAll = false
         }
     }
 }

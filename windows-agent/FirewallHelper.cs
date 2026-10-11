@@ -18,22 +18,24 @@ public static class FirewallHelper
 
         try
         {
-            var hasTcp = HasRule(TcpRuleName);
-            var hasMdns = HasRule(MdnsRuleName);
+            var exePath = Environment.ProcessPath ?? Assembly.GetEntryAssembly()?.Location;
+
+            // Verify the rules are actually bound to this exe and port — a stale
+            // rule (e.g. from a unit-test host) must not satisfy this check.
+            var hasTcp = HasCorrectRule(TcpRuleName, exePath, Program.Port);
+            var hasMdns = HasCorrectRule(MdnsRuleName, null, 5353);
 
             if (hasTcp && hasMdns) return;
-
-            var exePath = Environment.ProcessPath ?? Assembly.GetEntryAssembly()?.Location;
 
             // Attempt quiet addition first (succeeds if app runs with admin rights)
             if (!hasTcp) AddRule(TcpRuleName, "TCP", Program.Port, exePath, elevated: false);
             if (!hasMdns) AddRule(MdnsRuleName, "UDP", 5353, exePath, elevated: false);
 
             // Verify if rules were created; if not, request elevation (UAC prompt) once
-            if (!HasRule(TcpRuleName) || !HasRule(MdnsRuleName))
+            if (!HasCorrectRule(TcpRuleName, exePath, Program.Port) || !HasCorrectRule(MdnsRuleName, null, 5353))
             {
-                if (!HasRule(TcpRuleName)) AddRule(TcpRuleName, "TCP", Program.Port, exePath, elevated: true);
-                if (!HasRule(MdnsRuleName)) AddRule(MdnsRuleName, "UDP", 5353, exePath, elevated: true);
+                if (!HasCorrectRule(TcpRuleName, exePath, Program.Port)) AddRule(TcpRuleName, "TCP", Program.Port, exePath, elevated: true);
+                if (!HasCorrectRule(MdnsRuleName, null, 5353)) AddRule(MdnsRuleName, "UDP", 5353, exePath, elevated: true);
             }
         }
         catch (Exception ex)
@@ -57,6 +59,41 @@ public static class FirewallHelper
             });
             proc?.WaitForExit(3000);
             return proc?.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True only when a rule with this name exists AND is bound to the expected
+    /// program and port. A stale rule (e.g. left over from a unit-test host) must
+    /// not satisfy this check, otherwise the agent never provisions its own rule.
+    /// </summary>
+    public static bool HasCorrectRule(string ruleName, string? expectedProgram, int expectedPort)
+    {
+        if (!HasRule(ruleName)) return false;
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "netsh",
+                Arguments = $"advfirewall firewall show rule name=\"{ruleName}\" verbose",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            var output = proc?.StandardOutput.ReadToEnd() ?? "";
+            proc?.WaitForExit(3000);
+            if (proc?.ExitCode != 0) return false;
+
+            var programOk = string.IsNullOrEmpty(expectedProgram)
+                || output.Contains(expectedProgram, StringComparison.OrdinalIgnoreCase);
+            var portOk = output.Contains("LocalPort:", StringComparison.OrdinalIgnoreCase) &&
+                         output.Contains(expectedPort.ToString(), StringComparison.Ordinal);
+            return programOk && portOk;
         }
         catch
         {
