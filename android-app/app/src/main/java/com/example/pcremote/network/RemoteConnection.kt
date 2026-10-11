@@ -29,6 +29,26 @@ import okhttp3.WebSocketListener
 enum class ConnectionState { DISCONNECTED, CONNECTING, AWAITING_PAIRING, CONNECTED, RECONNECTING, FAILED }
 
 /**
+ * Host/port validation rules shared by the connection layer and the pairing UI,
+ * so "what the UI accepts" and "what OkHttp can build a URL for" never drift.
+ */
+object ConnectionEndpoint {
+    const val DEFAULT_PORT = 58642
+
+    /** Hostnames (RFC 1123 labels) and IPv4 literals only — no bare IPv6. */
+    private val HostPattern = Regex("^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+    fun hostIsValid(host: String): Boolean {
+        val trimmed = host.trim()
+        return trimmed.isNotEmpty() && trimmed.length <= 253 && HostPattern.matches(trimmed)
+    }
+
+    fun portIsValid(port: Int) = port in 1..65535
+
+    fun isConnectable(host: String, port: Int) = hostIsValid(host) && portIsValid(port)
+}
+
+/**
  * Message shape shared with the Windows agent's RemoteMessage class.
  * Keep field names identical (camelCase matches the C# JsonPropertyName values).
  */
@@ -180,10 +200,23 @@ class RemoteConnection(
         intentionallyClosed = false
         authFailed = false
         expectedDisconnect = false
-        currentHostInternal = host
+
+        // OkHttp throws IllegalArgumentException synchronously from
+        // Request.Builder().url() for a host it cannot parse, which would
+        // escape the click handler and crash the app. Validate first and
+        // surface a normal FAILED state instead.
+        val target = host.trim()
+        if (!ConnectionEndpoint.isConnectable(target, port)) {
+            currentHostInternal = target.ifEmpty { null }
+            currentPortInternal = port
+            _state.value = ConnectionState.FAILED
+            return
+        }
+
+        currentHostInternal = target
         currentPortInternal = port
         _state.value = ConnectionState.CONNECTING
-        doConnect(host, port, pairingCode = pairingCode)
+        doConnect(target, port, pairingCode = pairingCode)
     }
 
     /** Reconnects to the last host using only its saved token (no code prompt). */
@@ -213,10 +246,26 @@ class RemoteConnection(
     fun shutdown() {
         disconnect()
         scope.cancel()
+        // Drop the static reference: the foreground service and any later
+        // onStartCommand must not hold a cancelled connection graph alive.
+        if (activeInstance === this) activeInstance = null
     }
 
     private fun doConnect(host: String, port: Int, pairingCode: String?) {
-        val request = Request.Builder().url("wss://$host:$port/").build()
+        // Defence in depth: OkHttp throws IllegalArgumentException from
+        // url() for hosts it cannot parse, which must never escape to the
+        // caller's click handler as a crash.
+        val request = try
+        {
+            Request.Builder().url("wss://$host:$port/").build()
+        }
+        catch (e: IllegalArgumentException)
+        {
+            android.util.Log.w("RemoteConnection", "Rejected unsupported host '$host': ${e.message}")
+            webSocket = null
+            _state.value = ConnectionState.FAILED
+            return
+        }
         webSocket = clientFor(host).newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val savedToken = tokenStore.getToken(host)
@@ -241,17 +290,12 @@ class RemoteConnection(
                     }
                     "auth_failed" -> {
                         activeTrustManagers[host]?.clearPending()
-                        // Only treat rate_limited as a permanent failure (never retry).
-                        // invalid_credentials and other errors are retriable — the client
-                        // will keep attempting to reconnect (Fix: was blocking all retries).
-                        if (msg.errorCode == "rate_limited") {
-                            authFailed = true
-                            _state.value = ConnectionState.FAILED
-                        } else {
-                            // Retriable auth failure: schedule reconnect instead of giving up.
-                            _state.value = ConnectionState.RECONNECTING
-                            scheduleReconnect(host, port)
-                        }
+                        // A rejected pairing code or a revoked token cannot get
+                        // better by retrying with the same secret: give the
+                        // user an error they can act on, not a silent backoff
+                        // loop that also feeds the agent's IP lockout.
+                        authFailed = true
+                        _state.value = ConnectionState.FAILED
                     }
                     "disconnecting" -> expectedDisconnect = true
                 }
@@ -265,7 +309,11 @@ class RemoteConnection(
                     // Do NOT auto-clear pin on failure (security risk: MITM certificate poisoning vector).
                     // Pins are cleared only via explicit user action.
                     _state.value = ConnectionState.FAILED
-                } else if (!authFailed && tokenStore.getToken(host) != null) {
+                } else if (authFailed) {
+                    // Keep the auth failure visible: this callback fires right
+                    // after auth_failed and must not overwrite it.
+                    _state.value = ConnectionState.FAILED
+                } else if (tokenStore.getToken(host) != null) {
                     scheduleReconnect(host, port)
                 } else {
                     _state.value = ConnectionState.FAILED
@@ -273,8 +321,10 @@ class RemoteConnection(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (intentionallyClosed || authFailed || expectedDisconnect) {
+                if (intentionallyClosed || expectedDisconnect) {
                     _state.value = ConnectionState.DISCONNECTED
+                } else if (authFailed) {
+                    _state.value = ConnectionState.FAILED
                 } else if (tokenStore.getToken(host) != null) {
                     scheduleReconnect(host, port)
                 } else {
@@ -318,10 +368,16 @@ class RemoteConnection(
 
     private fun clientFor(host: String): OkHttpClient =
         hostClients.getOrPut(host) {
-            // Only one PC connected at a time; evict stale entries to prevent leak
+            // Only one PC connects at a time; evict stale entries instead of
+            // letting the map grow, and actually release their sockets.
             if (hostClients.size >= 3) {
                 val stale = hostClients.keys.first()
-                hostClients.remove(stale)
+                hostClients.remove(stale)?.let { old ->
+                    runCatching {
+                        old.dispatcher.cancelAll()
+                        old.connectionPool.evictAll()
+                    }
+                }
                 activeTrustManagers.remove(stale)
             }
             val trustManager = PinningTrustManager(pinStore, host)

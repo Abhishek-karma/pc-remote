@@ -12,6 +12,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.RemoteConnection
 
 /**
@@ -74,6 +75,13 @@ class ConnectionForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_DISCONNECT) {
             RemoteConnection.activeInstance?.disconnect()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // START_STICKY resurrects this service after the process is killed,
+        // when there is no socket left to keep alive — a foreground
+        // notification for a dead session is worse than no notification.
+        if (RemoteConnection.activeInstance?.state?.value != ConnectionState.CONNECTED) {
             stopSelf()
             return START_NOT_STICKY
         }

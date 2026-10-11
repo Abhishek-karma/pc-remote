@@ -93,11 +93,20 @@ public class PairingStore
     {
         PruneExpiredFailures();
         var rec = _pairingFailures.GetOrAdd(clientIp, _ => new FailureRecord());
+        var now = DateTime.UtcNow;
+
+        // A lockout that has already been served and has expired must not
+        // carry its strike count into the next window: otherwise one typo
+        // after a lockout re-locks the device for another 2 minutes.
+        if (rec.LockedUntilUtc > DateTime.MinValue && rec.LockedUntilUtc < now)
+        {
+            rec.Count = 0;
+            rec.LockedUntilUtc = DateTime.MinValue;
+        }
+
         rec.Count++;
         if (rec.Count >= MaxPairingFailures)
-        {
-            rec.LockedUntilUtc = DateTime.UtcNow.Add(PairingLockout);
-        }
+            rec.LockedUntilUtc = now.Add(PairingLockout);
     }
 
     public void PruneExpiredFailures()

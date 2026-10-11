@@ -26,29 +26,41 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem("Open PC Remote", null, (_, _) => ShowGuiWindow()));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_codeItem);
-        menu.Items.Add("Copy pairing code", null, (_, _) => Clipboard.SetText(Program.CurrentPairingCode));
+        menu.Items.Add(new ToolStripMenuItem("Copy pairing code", null, (_, _) => CopyToClipboard(Program.CurrentPairingCode)));
         menu.Items.Add(_devicesItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_startupItem);
         menu.Items.Add("Open logs folder", null, (_, _) => AgentLog.OpenLogsFolder());
         menu.Items.Add("Check for updates...", null, async (_, _) =>
         {
-            var res = await AppUpdater.CheckForUpdateAsync();
-            if (res.UpdateAvailable)
+            // An async void handler must never let an exception escape: WinForms
+            // rethrows it on the message loop and the process dies.
+            try
             {
-                var choice = MessageBox.Show(
-                    $"A new version ({res.LatestVersion}) of PC Remote Agent is available!\n\nDo you want to download and update now?",
-                    "Update Available",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Information);
-                if (choice == DialogResult.Yes)
+                var res = await AppUpdater.CheckForUpdateAsync();
+                if (res.UpdateAvailable)
                 {
-                    await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl);
+                    var choice = MessageBox.Show(
+                        $"A new version ({res.LatestVersion}) of PC Remote Agent is available!\n\nDo you want to download and update now?",
+                        "Update Available",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Information);
+                    if (choice == DialogResult.Yes)
+                    {
+                        await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl, res.ChecksumsUrl);
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("You are running the latest version of PC Remote Agent.", "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
-            else
+            catch (Exception ex)
             {
-                MessageBox.Show("You are running the latest version of PC Remote Agent.", "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                AgentLog.Warn($"[!] Update check failed: {ex.GetType().Name}: {ex.Message}");
+                MessageBox.Show(
+                    $"Could not check for updates.\n\n{ex.Message}",
+                    "PC Remote", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         });
         menu.Items.Add(new ToolStripSeparator());
@@ -60,14 +72,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowGuiWindow();
 
-        Program.PairingCodeChanged += code => OnUi(() =>
-        {
-            _codeItem.Text = $"Pairing code: {code}";
-            _tray.Text = $"PC Remote — {Environment.MachineName}";
-        });
-
-        Program.ConnectedCountChanged += n => OnUi(() =>
-            _devicesItem.Text = n == 1 ? "1 device connected" : $"{n} devices connected");
+        // Detached in Dispose: the static events outlive the tray icon and
+        // would otherwise invoke into a torn-down UI.
+        Program.PairingCodeChanged += OnPairingCodeChanged;
+        Program.ConnectedCountChanged += OnConnectedCountChanged;
 
         _startupItem.CheckedChanged += (_, _) => StartupToggle.Set(_startupItem.Checked);
 
@@ -87,6 +95,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void OnPairingCodeChanged(string code) => OnUi(() =>
+    {
+        _codeItem.Text = $"Pairing code: {code}";
+        _tray.Text = $"PC Remote — {Environment.MachineName}";
+    });
+
+    private void OnConnectedCountChanged(int n) => OnUi(() =>
+        _devicesItem.Text = n == 1 ? "1 device connected" : $"{n} devices connected");
+
     private void ShowGuiWindow()
     {
         if (_mainForm.IsDisposed) return;
@@ -94,6 +111,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.WindowState = FormWindowState.Normal;
         _mainForm.BringToFront();
         _mainForm.Activate();
+    }
+
+    /// <summary>Clipboard writes throw when another process holds the clipboard
+    /// open — never take the tray down for it.</summary>
+    private static void CopyToClipboard(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Warn($"[!] Could not write to the clipboard: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>The exe's embedded brand icon, with a safe fallback.</summary>
@@ -130,6 +162,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try { _cts.Cancel(); } catch { /* already disposed */ }
         Program.StopServer();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Program.PairingCodeChanged -= OnPairingCodeChanged;
+            Program.ConnectedCountChanged -= OnConnectedCountChanged;
+            _cts.Dispose();
+            _tray.Dispose();
+            _mainForm.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
 

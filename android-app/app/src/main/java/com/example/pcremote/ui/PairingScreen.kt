@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.pcremote.network.ConnectionEndpoint
 import com.example.pcremote.network.ConnectionState
 import com.example.pcremote.network.DiscoveredPc
 import com.example.pcremote.network.DiscoveryService
@@ -109,7 +110,7 @@ fun PairingScreen(
     }
 
     var host by remember { mutableStateOf("") }
-    var portText by remember { mutableStateOf("58642") }
+    var portText by remember { mutableStateOf(ConnectionEndpoint.DEFAULT_PORT.toString()) }
     var pairingCode by remember { mutableStateOf("") }
     var showManual by remember { mutableStateOf(false) }
     val connecting = connState == ConnectionState.CONNECTING
@@ -352,7 +353,7 @@ fun PairingScreen(
 
                     Button(
                         onClick = {
-                            val parsedPort = portText.toIntOrNull() ?: 58642
+                            val parsedPort = portText.toIntOrNull() ?: ConnectionEndpoint.DEFAULT_PORT
                             connection.connect(host = host, port = parsedPort, pairingCode = pairingCode.ifBlank { null })
                         },
                         enabled = host.isNotBlank() && !connecting,
@@ -379,7 +380,16 @@ fun PairingScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "Unable to establish connection. Verify the IP address, pairing code, and PC firewall permissions.",
+                                // Distinguish "you typed something wrong" from
+                                // "nothing answered" — the fix differs.
+                                text = when {
+                                    connection.lastAuthFailed ->
+                                        "Pairing was rejected. Check the 6-digit code (shown on your PC), or unpair this PC and pair again if you previously trusted a different one."
+                                    !ConnectionEndpoint.isConnectable(host, portText.toIntOrNull() ?: ConnectionEndpoint.DEFAULT_PORT) ->
+                                        "That is not a valid IP address or host name. Use the address shown on your PC's PC Remote window, for example 192.168.1.42."
+                                    else ->
+                                        "Could not reach the PC. Check that both devices are on the same Wi-Fi, the agent is running, and port ${portText.ifBlank { ConnectionEndpoint.DEFAULT_PORT.toString() }} is allowed through the firewall."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = RemoteColors.Error,
                                 modifier = Modifier.padding(10.dp)

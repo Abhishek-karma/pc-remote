@@ -40,6 +40,12 @@ public static class AgentLog
         }
     }
 
+    /// <summary>
+    /// Mirrored warning line: goes to the console and, once initialized, the
+    /// daily log file. Safe to call before Init() (console only).
+    /// </summary>
+    public static void Warn(string message) => Console.WriteLine(message);
+
     /// <summary>Opens the log folder in Explorer (tray menu shortcut).</summary>
     public static void OpenLogsFolder()
     {

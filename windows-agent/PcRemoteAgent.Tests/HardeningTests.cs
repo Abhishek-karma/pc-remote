@@ -94,6 +94,77 @@ public class HardeningTests : IDisposable
     }
 
     [Fact]
+    public async Task ExpiredLockoutDoesNotReLockOnTheNextSingleTypo()
+    {
+        // Regression: the strike counter used to survive past a served lockout,
+        // so a single wrong code immediately re-locked the device for 2 minutes.
+        var store = NewStore();
+        store.GeneratePairingCode();
+        const string attackerIp = "192.168.1.202";
+        var originalLockout = PairingStore.PairingLockout;
+        PairingStore.PairingLockout = TimeSpan.FromSeconds(1);
+        try
+        {
+            for (var i = 0; i < PairingStore.MaxPairingFailures; i++)
+                Assert.False(store.TryAuthenticate(null, "000000", attackerIp));
+            Assert.True(store.IsIpLockedOut(attackerIp));
+
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
+            Assert.False(store.IsIpLockedOut(attackerIp));
+
+            // One typo now starts a fresh window instead of an instant re-lock.
+            Assert.False(store.TryAuthenticate(null, "000000", attackerIp));
+            Assert.False(store.IsIpLockedOut(attackerIp));
+        }
+        finally
+        {
+            PairingStore.PairingLockout = originalLockout;
+        }
+    }
+
+    [Fact]
+    public void ParsesSha256SumEntryForTheRequestedAsset()
+    {
+        // Mirrors `sha256sum` output as written by the release workflow.
+        var text = string.Join("\n", new[]
+        {
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  PC-Remote-Agent-win-x64.exe",
+            "12c6fc06c99a462375eeb3f43dfd132b564428321cdd9c2ba15f5bd8b1c6b02c  PC-Remote-Android.apk",
+            ""
+        });
+
+        Assert.Equal("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            AppUpdater.ParseChecksumFor(text, "PC-Remote-Agent-win-x64.exe"));
+        Assert.Equal("12c6fc06c99a462375eeb3f43dfd132b564428321cdd9c2ba15f5bd8b1c6b02c",
+            AppUpdater.ParseChecksumFor(text, "PC-Remote-Android.apk"));
+    }
+
+    [Fact]
+    public void ParsesChecksumsToleratingBinaryModeAndBlankLines()
+    {
+        var text = "AAAA1111  *PC-Remote-Agent-win-x64.exe\n\nnot a checksum line\n";
+        Assert.Equal("AAAA1111", AppUpdater.ParseChecksumFor(text, "PC-Remote-Agent-win-x64.exe"));
+    }
+
+    [Fact]
+    public void MissingChecksumEntryIsRejectedRatherThanIgnored()
+    {
+        var text = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  something-else.exe";
+        Assert.Null(AppUpdater.ParseChecksumFor(text, "PC-Remote-Agent-win-x64.exe"));
+        Assert.Null(AppUpdater.ParseChecksumFor("", "PC-Remote-Agent-win-x64.exe"));
+        Assert.Null(AppUpdater.ParseChecksumFor("   \n", "PC-Remote-Agent-win-x64.exe"));
+    }
+
+    [Fact]
+    public async Task UpdateWithoutAChecksumFileIsNotApplied()
+    {
+        // No checksums URL means the download cannot be verified, so nothing is executed.
+        var verified = await AppUpdater.VerifyDownloadAsync(
+            Path.GetTempFileName(), checksumsUrl: null, "PC-Remote-Agent-win-x64.exe");
+        Assert.False(verified);
+    }
+
+    [Fact]
     public void InstallerHelperPathIsValid()
     {
         Assert.False(string.IsNullOrWhiteSpace(InstallerHelper.InstalledExePath));

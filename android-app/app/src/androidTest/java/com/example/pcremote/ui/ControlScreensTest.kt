@@ -64,7 +64,7 @@ class ControlScreensTest {
     fun sleepActsImmediatelyWithoutDialog() {
         composeTestRule.setContent { PowerScreen(connection, pcName = "TEST-PC", onFeedback = {}) }
 
-        composeTestRule.onNodeWithText("Sleep").performClick()
-        composeTestRule.onNodeWithText("Sleep PC?").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Put PC to Sleep").performClick()
+        composeTestRule.onNodeWithText("Sleep Mode?").assertDoesNotExist()
     }
 }

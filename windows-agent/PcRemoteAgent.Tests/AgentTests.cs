@@ -287,6 +287,119 @@ public class WsTlsIntegrationTests
         listener.Stop();
     }
 
+    [Fact]
+    public async Task SilentClientIsDroppedInsteadOfPinnedForever()
+    {
+        // A peer that completes the TLS+WS handshake and then says nothing must
+        // not hold a handler task for the lifetime of the process.
+        var cert = MakeTestCert();
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        try
+        {
+            var server = Task.Run(async () =>
+            {
+                var client = await listener.AcceptTcpClientAsync();
+                await Program.HandleConnectionAsync(client, cert,
+                    authTimeout: TimeSpan.FromSeconds(2));
+            });
+
+            using var ws = new ClientWebSocket();
+            ws.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            await ws.ConnectAsync(new Uri($"wss://127.0.0.1:{port}/"), CancellationToken.None).WithTimeout(15);
+
+            // No auth message at all — the server must give up on its own.
+            await server.WithTimeout(15);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ChattyConnectionSurvivesTheTimeoutThatDropsASilentOne()
+    {
+        var cert = MakeTestCert();
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var token = Program.CreateAuthToken();
+        var shortIdle = TimeSpan.FromSeconds(4);
+        try
+        {
+            var server = Task.Run(async () =>
+            {
+                var client = await listener.AcceptTcpClientAsync();
+                await Program.HandleConnectionAsync(client, cert,
+                    authTimeout: TimeSpan.FromSeconds(10), idleTimeout: shortIdle);
+            });
+
+            using var ws = new ClientWebSocket();
+            ws.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            await ws.ConnectAsync(new Uri($"wss://127.0.0.1:{port}/"), CancellationToken.None).WithTimeout(15);
+            await SendTextAsync(ws, JsonSerializer.Serialize(new RemoteMessage { Type = "auth", Token = token }));
+            var authReply = await ReceiveTextAsync(ws).WithTimeout(15);
+            Assert.Contains("auth_ok", authReply);
+
+            // Keep talking far past the 4 s idle limit — every message re-arms it.
+            for (var i = 0; i < 5; i++)
+            {
+                await SendTextAsync(ws, JsonSerializer.Serialize(new RemoteMessage { Type = "ping" }));
+                var reply = await ReceiveTextAsync(ws).WithTimeout(10);
+                Assert.Contains("command_result", reply); // still connected and answering
+            }
+
+            var handlerDone = await Task.WhenAny(server, Task.Delay(1000));
+            Assert.False(handlerDone == server, "server should still be serving the open connection");
+
+            // ...and going silent past that same limit does free the slot.
+            await server.WithTimeout(20);
+        }
+        finally
+        {
+            Program.RevokeAllTokens();
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task DisconnectMessageGetsAckedAndClosesTheConnection()
+    {
+        var cert = MakeTestCert();
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var token = Program.CreateAuthToken();
+        try
+        {
+            var server = Task.Run(async () =>
+            {
+                var client = await listener.AcceptTcpClientAsync();
+                await Program.HandleConnectionAsync(client, cert);
+            });
+
+            using var ws = new ClientWebSocket();
+            ws.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            await ws.ConnectAsync(new Uri($"wss://127.0.0.1:{port}/"), CancellationToken.None).WithTimeout(15);
+            await SendTextAsync(ws, JsonSerializer.Serialize(new RemoteMessage { Type = "auth", Token = token }));
+            Assert.Contains("auth_ok", await ReceiveTextAsync(ws).WithTimeout(15));
+
+            await SendTextAsync(ws, JsonSerializer.Serialize(new RemoteMessage { Type = "disconnect", RequestId = "req-1" }));
+            var ack = await ReceiveTextAsync(ws).WithTimeout(15);
+            Assert.Contains("disconnect_ack", ack);
+
+            // Server tears the connection down right after the ack.
+            await server.WithTimeout(15);
+        }
+        finally
+        {
+            Program.RevokeAllTokens();
+            listener.Stop();
+        }
+    }
+
     private static async Task SendTextAsync(ClientWebSocket ws, string text)
     {
         var bytes = Encoding.UTF8.GetBytes(text);

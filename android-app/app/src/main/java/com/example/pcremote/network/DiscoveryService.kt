@@ -117,8 +117,21 @@ class DiscoveryService(
         }
 
         browsing = true
-        gateway.discoverServices(SERVICE_TYPE, events)
-        multicastGate.acquire()
+        // NsdManager rejects a discover/stop/discover cycle with
+        // IllegalArgumentException on several OEM builds — a discovery refresh
+        // must never take the app down.
+        try
+        {
+            gateway.discoverServices(SERVICE_TYPE, events)
+            multicastGate.acquire()
+        }
+        catch (e: Exception)
+        {
+            browsing = false
+            gateway.stopDiscovery()
+            runCatching { multicastGate.release() }
+            _snapshot.value = DiscoverySnapshot(DiscoveryStatus.FAILED, emptyList())
+        }
     }
 
     /** Stops the browse, releases the multicast lock, clears the list. */

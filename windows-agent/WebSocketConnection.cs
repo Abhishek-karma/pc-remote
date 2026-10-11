@@ -5,6 +5,7 @@ using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 
 namespace PcRemoteAgent;
 
@@ -17,6 +18,7 @@ public class WebSocketConnection : IDisposable
 
     private readonly Stream _stream;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private int _disposed;
 
     private WebSocketConnection(Stream stream)
     {
@@ -53,8 +55,11 @@ public class WebSocketConnection : IDisposable
             await SendUpgradeResponseAsync(stream, key, cts.Token);
             return new WebSocketConnection(stream);
         }
-        catch
+        catch (Exception ex)
         {
+            // TLS/handshake failures are the most common production issue and
+            // must be diagnosable — never swallow them silently.
+            AgentLog.Warn($"[!] WebSocket handshake failed: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
@@ -102,11 +107,11 @@ public class WebSocketConnection : IDisposable
         await stream.FlushAsync(ct);
     }
 
-    public async Task<string?> ReceiveTextAsync()
+    public async Task<string?> ReceiveTextAsync(CancellationToken ct = default)
     {
         while (true)
         {
-            var frame = await ReadFrameAsync();
+            var frame = await ReadFrameAsync(ct);
             if (frame is null) return null;
             var (opcode, payload) = frame.Value;
 
@@ -123,10 +128,10 @@ public class WebSocketConnection : IDisposable
                         return null;
                     }
                 case 0x8:
-                    await SendFrameAsync(0x8, []);
+                    await SendFrameAsync(0x8, [], ct);
                     return null;
                 case 0x9:
-                    await SendFrameAsync(0xA, payload);
+                    await SendFrameAsync(0xA, payload, ct);
                     break;
                 case 0xA:
                     break;
@@ -136,10 +141,10 @@ public class WebSocketConnection : IDisposable
         }
     }
 
-    private async Task<(byte opcode, byte[] payload)?> ReadFrameAsync()
+    private async Task<(byte opcode, byte[] payload)?> ReadFrameAsync(CancellationToken ct)
     {
         var header = new byte[2];
-        if (await ReadExactAsync(header, 2) < 2) return null;
+        if (await ReadExactAsync(header, 2, ct) < 2) return null;
 
         byte finAndRsv = header[0];
         bool fin = (finAndRsv & 0x80) != 0;
@@ -189,28 +194,28 @@ public class WebSocketConnection : IDisposable
         if (length == 126)
         {
             var ext = new byte[2];
-            if (await ReadExactAsync(ext, 2) < 2) return null;
+            if (await ReadExactAsync(ext, 2, ct) < 2) return null;
             length = BinaryPrimitives.ReadUInt16BigEndian(ext);
         }
         else if (length == 127)
         {
             var ext = new byte[8];
-            if (await ReadExactAsync(ext, 8) < 8) return null;
+            if (await ReadExactAsync(ext, 8, ct) < 8) return null;
             length = BinaryPrimitives.ReadUInt64BigEndian(ext);
             if (length > long.MaxValue) return null;
         }
 
         if (length > MaxPayloadSize)
         {
-            Console.WriteLine($"[!] WebSocket frame payload length ({length}) exceeds maximum limit ({MaxPayloadSize})");
+            AgentLog.Warn($"[!] WebSocket frame payload length ({length}) exceeds maximum limit ({MaxPayloadSize})");
             return null;
         }
 
         var maskKey = new byte[4];
-        if (await ReadExactAsync(maskKey, 4) < 4) return null;
+        if (await ReadExactAsync(maskKey, 4, ct) < 4) return null;
 
         var payload = new byte[(int)length];
-        if (await ReadExactAsync(payload, (int)length) < (int)length) return null;
+        if (await ReadExactAsync(payload, (int)length, ct) < (int)length) return null;
 
         for (var i = 0; i < payload.Length; i++)
             payload[i] ^= maskKey[i % 4];
@@ -228,23 +233,25 @@ public class WebSocketConnection : IDisposable
         return (opcode, payload);
     }
 
-    private async Task<int> ReadExactAsync(byte[] buffer, int count)
+    private async Task<int> ReadExactAsync(byte[] buffer, int count, CancellationToken ct)
     {
         var read = 0;
         while (read < count)
         {
-            var n = await _stream.ReadAsync(buffer.AsMemory(read, count - read));
+            var n = await _stream.ReadAsync(buffer.AsMemory(read, count - read), ct);
             if (n == 0) break;
             read += n;
         }
         return read;
     }
 
-    public Task SendTextAsync(string text) =>
-        SendFrameAsync(0x1, Encoding.UTF8.GetBytes(text));
+    public Task SendTextAsync(string text, CancellationToken ct = default) =>
+        SendFrameAsync(0x1, Encoding.UTF8.GetBytes(text), ct);
 
-    private async Task SendFrameAsync(byte opcode, byte[] payload)
+    private async Task SendFrameAsync(byte opcode, byte[] payload, CancellationToken ct = default)
     {
+        if (Volatile.Read(ref _disposed) != 0) return;
+
         using var ms = new MemoryStream();
         ms.WriteByte((byte)(0x80 | opcode));
         if (payload.Length < 126)
@@ -266,11 +273,26 @@ public class WebSocketConnection : IDisposable
         }
         ms.Write(payload);
 
-        await _sendLock.WaitAsync();
+        // A peer that stops reading fills the socket send buffer and would
+        // otherwise hold _sendLock forever, wedging the receive loop. Bound
+        // every write so the handler can always make progress.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(SendTimeout);
+
         try
         {
-            await _stream.WriteAsync(ms.ToArray());
-            await _stream.FlushAsync();
+            await _sendLock.WaitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new IOException($"WebSocket send timed out after {SendTimeout.TotalSeconds:0}s (peer not reading)");
+        }
+
+        try
+        {
+            if (Volatile.Read(ref _disposed) != 0) return;
+            await _stream.WriteAsync(ms.ToArray(), timeout.Token);
+            await _stream.FlushAsync(timeout.Token);
         }
         finally
         {
@@ -278,9 +300,16 @@ public class WebSocketConnection : IDisposable
         }
     }
 
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(15);
+
     public void Dispose()
     {
-        _sendLock.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try
+        {
+            _sendLock.Dispose();
+        }
+        catch (ObjectDisposedException) { /* already gone */ }
         _stream.Dispose();
     }
 }

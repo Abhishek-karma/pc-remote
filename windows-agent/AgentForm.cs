@@ -259,7 +259,7 @@ internal sealed class AgentForm : Form
                 {
                     btnCheckUpdates.Text = "Updating...";
                     btnCheckUpdates.Enabled = false;
-                    await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl);
+                    await AppUpdater.DownloadAndApplyUpdateAsync(res.DownloadUrl, res.ChecksumsUrl);
                 }
             }
             else
@@ -282,10 +282,52 @@ internal sealed class AgentForm : Form
         Controls.Add(pnlNetwork);
         Controls.Add(pnlPrefs);
 
-        // Event subscriptions for dynamic updates
-        Program.PairingCodeChanged += code => BeginInvoke(() => _lblPairingCode.Text = FormatPairingCode(code));
-        Program.ConnectedCountChanged += count => BeginInvoke(() =>
-            _lblDevicesCount.Text = count == 1 ? "1 device connected" : $"{count} device(s) connected");
+        // Event subscriptions for dynamic updates. detached in Dispose so the
+        // form is never kept alive by (or written to after disposal via) the
+        // static events — that silently killed the pairing-code rotation loop.
+        Program.PairingCodeChanged += OnPairingCodeChanged;
+        Program.ConnectedCountChanged += OnConnectedCountChanged;
+    }
+
+    private void OnPairingCodeChanged(string code) => OnUi(() => _lblPairingCode.Text = FormatPairingCode(code));
+
+    private void OnConnectedCountChanged(int count) => OnUi(() =>
+        _lblDevicesCount.Text = count == 1 ? "1 device connected" : $"{count} device(s) connected");
+
+    /// <summary>Marshals to the UI thread, dropping the update if we're gone.</summary>
+    private void OnUi(Action action)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(action);
+        }
+        catch (ObjectDisposedException) { /* window closed mid-invoke */ }
+        catch (InvalidOperationException) { /* handle destroyed mid-invoke */ }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // The window may have been created after several state changes were
+        // dropped (minimized to tray) — resync once it exists.
+        OnUi(() =>
+        {
+            _lblPairingCode.Text = FormatPairingCode(Program.CurrentPairingCode);
+            _lblDevicesCount.Text = Program.ConnectedDeviceCount == 1
+                ? "1 device connected"
+                : $"{Program.ConnectedDeviceCount} device(s) connected";
+        });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Program.PairingCodeChanged -= OnPairingCodeChanged;
+            Program.ConnectedCountChanged -= OnConnectedCountChanged;
+        }
+        base.Dispose(disposing);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

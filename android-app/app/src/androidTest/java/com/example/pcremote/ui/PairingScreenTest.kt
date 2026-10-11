@@ -103,7 +103,7 @@ class PairingScreenTest {
         composeTestRule.mainClock.advanceTimeBy(6_000)
 
         composeTestRule.onNodeWithText(
-            "No PCs found yet"
+            "No workstations detected"
         ).assertIsDisplayed()
     }
 }

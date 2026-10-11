@@ -26,14 +26,14 @@ Control your cursor, launch shortcuts, type Unicode text, manage media, and trig
 - **Accessible D-Pad Mode**: Discrete cursor stepping and dedicated button triggers for high-precision navigation.
 
 ### ⌨️ Comprehensive Keyboard & Function Deck
-- **Full F1–F24 Function Key Array**: 4×3 clustered function keypads with quick modifier combination triggers (`Alt+F4`, `Ctrl+F5`, `Shift+F10`, `F11`).
+- **Full F1–F12 Function Key Array**: 4×3 clustered function keypads with 6×2 compact layout and quick modifier combination triggers (`Alt+F4`, `Ctrl+F5`, `Shift+F10`, `F11`).
 - **Modifier Latching**: Real-time latching for `Ctrl`, `Alt`, `Shift`, and `Win` modifiers.
 - **Editing & Navigation Keys**: `Esc`, `Tab`, `Insert`, `Delete`, `Home`, `End`, `Page Up`, `Page Down`, and `Print Screen`.
 - **Direct Unicode Typing**: Fast text transmission directly to the active PC window.
 
 ### 🎵 Media & Volume Control Hub
 - **Transport Controls**: Play/Pause, Next Track, Previous Track, Stop.
-- **Hold-to-Repeat Volume**: Continuous smooth volume increment/decrement, one-tap mute toggling, and fast 10s scrub skip buttons.
+- **Hold-to-Repeat Volume**: Continuous smooth volume increment/decrement, one-tap mute toggling, and fast 5s scrub skip buttons.
 
 ### ⚡ Power Management with Confirmation Guards
 - **Power Actions**: Lock Workstation, Sleep, Restart, and Shutdown.
@@ -104,12 +104,12 @@ Run `PC-Remote-Agent-win-x64.exe`. The agent starts quietly in your Windows syst
 ### Build Windows Agent
 ```bash
 cd windows-agent
-dotnet restore
-dotnet build -c Release
-dotnet test PcRemoteAgent.Tests/PcRemoteAgent.Tests.csproj
+dotnet restore PcRemoteAgent.slnx
+dotnet build PcRemoteAgent.slnx -c Release
+dotnet test PcRemoteAgent.slnx
 
 # Run in development console mode:
-dotnet run -- --console
+dotnet run --project PcRemoteAgent.csproj -- --console
 ```
 
 ### Build Android App
@@ -169,7 +169,7 @@ The agent exposes a hardened WebSocket endpoint (`wss://<IP>:58642`). Messages a
 { "version": 1, "requestId": "req-005", "type": "text_input", "text": "Hello, World! 🚀" }
 
 // Media Action
-{ "version": 1, "requestId": "req-006", "type": "media_control", "action": "play_pause" } // "vol_up" | "vol_down" | "mute" | "next" | "prev"
+{ "version": 1, "requestId": "req-006", "type": "media_control", "action": "play_pause" } // "vol_up" | "vol_down" | "mute" | "next" | "prev" | "stop"
 
 // Power Management
 { "version": 1, "requestId": "req-007", "type": "system_power", "action": "lock" } // "sleep" | "restart" | "shutdown"
@@ -184,7 +184,8 @@ The agent exposes a hardened WebSocket endpoint (`wss://<IP>:58642`). Messages a
 
 - **Strict Local Scope**: All communications take place strictly between the Android device and Windows PC on the local area network.
 - **Zero Cloud**: No remote servers, no STUN/TURN relays, no diagnostic telemetry, and no accounts required.
-- **Hardened Security Policy**: Detailed in [SECURITY.md](SECURITY.md) and audited in [AUDIT.md](AUDIT.md). Includes cryptographic RNG pairing codes, per-IP rate-limiting/lockout, 64 KiB frame caps, RFC 6455 frame masking enforcement, and automatic key/button release on disconnect.
+- **Hardened Security Policy**: See [SECURITY.md](SECURITY.md). Includes cryptographic RNG pairing codes, per-IP rate-limiting/lockout, 64 KiB frame caps, RFC 6455 frame masking enforcement, and automatic key/button release on disconnect.
+- **Verified Self-Updates**: The Windows agent only runs a downloaded update after matching it against the release's published `SHA256SUMS.txt`; an unverifiable download is discarded, never executed.
 
 ---
 

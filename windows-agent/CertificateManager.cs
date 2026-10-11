@@ -22,29 +22,35 @@ public static class CertificateManager
     /// <summary>
     /// Loads the persisted self-signed certificate, or generates and stores a
     /// new one (SANs: localhost + every local IPv4 so pinning by IP works).
-    /// If the current local IPs are not covered by the saved cert's SANs,
-    /// the cert is regenerated so TLS handshakes succeed after DHCP changes.
+    ///
+    /// The saved certificate is reused even when the local IPs have changed:
+    /// the agent binds to 0.0.0.0/::, so a DHCP change needs no SAN update, and
+    /// rotating the cert spontaneously would break the fingerprint pin of every
+    /// already-paired phone (they'd all fail TLS until manually unpaired).
+    /// A new cert is only generated when none exists, it can't be loaded, or it
+    /// is close to expiry.
     /// Never throws — callers fall back to serving plaintext if TLS setup fails.
     /// </summary>
     public static X509Certificate2 LoadOrCreate()
     {
         try
         {
-            if (File.Exists(CertFile))
-            {
-                var protectedBytes = File.ReadAllBytes(CertFile);
-                var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
-                var cert = new X509Certificate2(pfx);
+                if (File.Exists(CertFile))
+                {
+                    var protectedBytes = File.ReadAllBytes(CertFile);
+                    var pfx = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+                    var cert = new X509Certificate2(pfx);
 
-                if (CertCoversCurrentIPs(cert))
-                    return cert;
+                    var daysLeft = (cert.NotAfter - DateTime.Now).TotalDays;
+                    if (daysLeft > RenewWindowDays)
+                        return cert;
 
-                Console.WriteLine("[~] Local IPs changed since cert was generated; regenerating certificate");
-            }
+                    throw new InvalidOperationException($"saved certificate expires in {daysLeft:F0} days");
+                }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Could not load saved certificate ({ex.Message}); generating a new one");
+            AgentLog.Warn($"[!] Could not reuse saved certificate ({ex.Message}); generating a new one");
         }
 
         var cert2 = CreateSelfSigned();
@@ -52,31 +58,8 @@ public static class CertificateManager
         return cert2;
     }
 
-    /// <summary>
-    /// Returns true when all current local IPv4 addresses appear in the
-    /// certificate's Subject Alternative Name extension.
-    /// </summary>
-    private static bool CertCoversCurrentIPs(X509Certificate2 cert)
-    {
-        try
-        {
-            var sanExt = cert.Extensions.OfType<X509Extension>()
-                .FirstOrDefault(e => e.Oid?.Value == "2.5.29.17"); // SAN OID
-            if (sanExt == null) return false;
-
-            var sanText = sanExt.Format(multiLine: true);
-            foreach (var ip in Program.GetLocalIPv4Addresses())
-            {
-                if (!sanText.Contains(ip, StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    /// <summary>Replace the certificate this close to expiry.</summary>
+    private const int RenewWindowDays = 30;
 
     private static X509Certificate2 CreateSelfSigned()
     {

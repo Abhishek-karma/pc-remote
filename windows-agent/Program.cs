@@ -21,10 +21,25 @@ public static class Program
     public const int MaxTotalConnections = 10;
     public const int MaxConnectionsPerIp = 3;
 
+    /// <summary>Seconds an unauthenticated peer has to start authenticating.</summary>
+    public static readonly TimeSpan AuthTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>Seconds an authenticated peer may stay silent before its slot is freed.</summary>
+    public static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>A slot with no traffic for this long is treated as dead.</summary>
+    public static readonly TimeSpan StaleSlotThreshold = TimeSpan.FromSeconds(60);
+
     private static readonly PairingStore Pairing = new();
     private static readonly ConcurrentDictionary<string, DateTime> Connected = new();
 
     public static string CurrentPairingCode => Pairing.CurrentCode;
+
+    /// <summary>Live count of held connection slots (auth + unauthenticated).</summary>
+    public static int ConnectedDeviceCount
+    {
+        get { lock (Connected) { return Connected.Count; } }
+    }
     public static event Action<string>? PairingCodeChanged;
     public static event Action<int>? ConnectedCountChanged;
 
@@ -41,6 +56,15 @@ public static class Program
         lock (Pairing)
         {
             Pairing.ClearAllTokens();
+        }
+    }
+
+    /// <summary>Test/integration seam: issues a trusted device token.</summary>
+    internal static string CreateAuthToken()
+    {
+        lock (Pairing)
+        {
+            return Pairing.IssueTokenIfNeeded(null);
         }
     }
 
@@ -170,7 +194,7 @@ public static class Program
                 while (!ct.IsCancellationRequested)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(30), ct);
-                    var threshold = DateTime.UtcNow.AddSeconds(-60);
+                    var threshold = DateTime.UtcNow.Subtract(StaleSlotThreshold);
                     List<string> stale;
                     lock (Connected)
                     {
@@ -208,7 +232,11 @@ public static class Program
         while (!ct.IsCancellationRequested)
         {
             var client = await _listener.AcceptTcpClientAsync(ct);
-            _ = Task.Run(() => HandleConnectionAsync(client, cert));
+            // The per-connection task is self-contained and observes its own
+            // exceptions; the outer handler guarantees the socket is disposed.
+            _ = Task.Run(() => HandleConnectionAsync(client, cert))
+                .ContinueWith(t => AgentLog.Warn($"[!] Connection handler crashed: {t.Exception?.GetBaseException()}"),
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
         }
     }
 
@@ -236,62 +264,101 @@ public static class Program
         }
     }
 
-    internal static async Task HandleConnectionAsync(TcpClient client, X509Certificate2 cert)
+    internal static async Task HandleConnectionAsync(
+        TcpClient client,
+        X509Certificate2 cert,
+        TimeSpan? authTimeout = null,
+        TimeSpan? idleTimeout = null)
     {
+        var authLimit = authTimeout ?? AuthTimeout;
+        var idleLimit = idleTimeout ?? IdleTimeout;
         var clientIp = client.Client.RemoteEndPoint is IPEndPoint ep ? ep.Address.ToString() : "unknown";
-        if (!TryAcquireConnectionSlot(clientIp, out var connKey))
-        {
-            Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded");
-            return;
-        }
-
         try
         {
-            using var socket = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: true);
-            if (socket is null)
+            if (!TryAcquireConnectionSlot(clientIp, out var connKey))
             {
-                Console.WriteLine($"[!] {clientIp} rejected (handshake failed)");
-                return;
+                Console.WriteLine($"[!] {clientIp} rejected: connection limit exceeded");
+                return; // no slot to release
             }
 
-            Console.WriteLine($"[+] Connection from {clientIp} (TLS)");
-            PrintConnectedCount();
-
-            var authenticated = false;
-            var authDeadline = DateTime.UtcNow.AddSeconds(15);
-            var messageCount = 0;
-            var windowStart = DateTime.UtcNow;
-            var muteUntil = DateTime.MinValue;
-
-            while (true)
+            try
             {
-                if (!authenticated && DateTime.UtcNow > authDeadline)
+                using var socket = await WebSocketConnection.AcceptAsync(client.GetStream(), cert, isSecure: true);
+                if (socket is null)
                 {
-                    Console.WriteLine($"[!] {clientIp} disconnected (authentication timeout)");
-                    break;
+                    Console.WriteLine($"[!] {clientIp} rejected (handshake failed)");
+                    return;
                 }
 
-                var text = await socket.ReceiveTextAsync();
-                if (text is null) break;
+                Console.WriteLine($"[+] Connection from {clientIp} (TLS)");
+                PrintConnectedCount();
 
-                var now = DateTime.UtcNow;
-                if ((now - windowStart).TotalSeconds >= 1.0)
-                {
-                    messageCount = 0;
-                    windowStart = now;
-                }
-                messageCount++;
-                if (messageCount > 150)
-                {
-                    muteUntil = now.AddSeconds(1);
-                    messageCount = 0;
-                    windowStart = now.AddSeconds(1);
-                }
+                var authenticated = false;
+                var authDeadline = DateTime.UtcNow.Add(authLimit);
+                var messageCount = 0;
+                var windowStart = DateTime.UtcNow;
+                var muteUntil = DateTime.MinValue;
 
-                if (DateTime.UtcNow < muteUntil)
+                // A peer that opens a socket and then goes silent (or dies without
+                // a TCP reset — Wi-Fi to cellular handoff, phone sleep) must not
+                // pin a handler task forever. Every read is bounded; the deadline
+                // is re-armed on each loop iteration, so real traffic never trips it.
+                using var idle = new CancellationTokenSource();
+
+                while (true)
                 {
-                    continue;
-                }
+                    if (!authenticated && DateTime.UtcNow > authDeadline)
+                    {
+                        Console.WriteLine($"[!] {clientIp} disconnected (authentication timeout)");
+                        break;
+                    }
+
+                    idle.CancelAfter(authenticated ? idleLimit : authLimit);
+
+                    string? text;
+                    try
+                    {
+                        text = await socket.ReceiveTextAsync(idle.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Console.WriteLine($"[!] {clientIp} disconnected (idle timeout)");
+                        break;
+                    }
+                    catch (IOException ex)
+                    {
+                        Console.WriteLine($"[!] {clientIp} disconnected ({ex.Message})");
+                        break;
+                    }
+
+                    if (text is null) break;
+
+                    // Count as activity so the stale-slot cleanup never evicts a
+                    // live connection just because it has been quiet for a minute.
+                    lock (Connected)
+                    {
+                        if (Connected.ContainsKey(connKey))
+                            Connected[connKey] = DateTime.UtcNow;
+                    }
+
+                    var now = DateTime.UtcNow;
+                    if ((now - windowStart).TotalSeconds >= 1.0)
+                    {
+                        messageCount = 0;
+                        windowStart = now;
+                    }
+                    messageCount++;
+                    if (messageCount > 150)
+                    {
+                        muteUntil = now.AddSeconds(1);
+                        messageCount = 0;
+                        windowStart = now.AddSeconds(1);
+                    }
+
+                    if (DateTime.UtcNow < muteUntil)
+                    {
+                        continue;
+                    }
 
                 RemoteMessage? msg;
                 try
@@ -374,23 +441,30 @@ public static class Program
                     }));
                 }
 
-                await HandleCommandAsync(socket, msg);
+                // False means "close after this command" (peer said disconnect).
+                if (!await HandleCommandAsync(socket, msg)) break;
+            }
+            }
+            finally
+            {
+                lock (Connected)
+                {
+                    Connected.TryRemove(connKey, out _);
+                }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[!] Connection error from {clientIp}: {ex.Message}");
+            // Stack traces matter here: an agent running at startup has no
+            // console, so the log file is the only diagnostic surface.
+            Console.WriteLine($"[!] Connection error from {clientIp}: {ex}");
         }
         finally
         {
-            lock (Connected)
-            {
-                Connected.TryRemove(connKey, out _);
-            }
             Win32Input.ReleaseAllButtons();
             Console.WriteLine($"[-] {clientIp} disconnected");
             PrintConnectedCount();
-            client.Dispose();
+            client.Dispose(); // outer finally: the socket is never leaked
         }
     }
 
@@ -425,7 +499,11 @@ public static class Program
         }));
     }
 
-    private static async Task HandleCommandAsync(WebSocketConnection socket, RemoteMessage msg)
+    /// <summary>
+    /// Runs one protocol command. Returns false when the connection should be
+    /// closed after the reply (peer said "disconnect").
+    /// </summary>
+    private static async Task<bool> HandleCommandAsync(WebSocketConnection socket, RemoteMessage msg)
     {
         switch (msg.Type)
         {
@@ -435,10 +513,10 @@ public static class Program
                     Math.Clamp(msg.Dy ?? 0, -4096, 4096)))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
-                    return;
+                    return true;
                 }
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
             case "mouse_click":
                 var btn = (msg.Button ?? "left").ToLowerInvariant();
@@ -446,33 +524,33 @@ public static class Program
                 if (btn is not ("left" or "right" or "middle") || act is not ("click" or "down" or "up"))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "bad_field");
-                    return;
+                    return true;
                 }
                 if (!Win32Input.MouseClick(btn, act))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
-                    return;
+                    return true;
                 }
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
             case "mouse_scroll":
                 if (!Win32Input.Scroll(Math.Clamp(msg.Dy ?? 0, -1200, 1200)))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
-                    return;
+                    return true;
                 }
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
             case "key_press":
                 if (string.IsNullOrEmpty(msg.Key) || !Win32Input.SendKey(msg.Key, msg.Modifiers ?? []))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "bad_field");
-                    return;
+                    return true;
                 }
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
             case "text_input":
                 var text = msg.Text ?? "";
@@ -480,46 +558,59 @@ public static class Program
                 if (!Win32Input.TypeText(text))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "uipi_blocked");
-                    return;
+                    return true;
                 }
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
             case "media_control":
                 var mediaAct = (msg.Action ?? "").ToLowerInvariant();
-                if (mediaAct is not ("play_pause" or "next" or "prev" or "vol_up" or "vol_down" or "mute"))
+                if (mediaAct is not ("play_pause" or "next" or "prev" or "vol_up" or "vol_down" or "mute" or "stop"))
                 {
                     await SendErrorAsync(socket, msg.RequestId, "invalid_command");
-                    return;
+                    return true;
                 }
                 Win32Input.MediaControl(mediaAct);
                 await SendAckAsync(socket, msg.RequestId);
-                break;
+                return true;
 
-case "disconnect":
-                    _ = socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
-                    {
-                        Version = 1,
-                        RequestId = msg.RequestId,
-                        Type = "disconnect_ack"
-                    }));
-                    break;
+            case "disconnect":
+                // Await the ack: sending it fire-and-forget raced with the
+                // socket being disposed by the enclosing `using`.
+                await socket.SendTextAsync(JsonSerializer.Serialize(new RemoteMessage
+                {
+                    Version = 1,
+                    RequestId = msg.RequestId,
+                    Type = "disconnect_ack"
+                }));
+                return false;
 
-                case "system_power":
-                    var powerAct = (msg.Action ?? "").ToLowerInvariant();
-                    if (powerAct is not ("sleep" or "lock" or "shutdown" or "restart"))
-                    {
-                        await SendErrorAsync(socket, msg.RequestId, "invalid_command");
-                        return;
-                    }
+            case "system_power":
+                var powerAct = (msg.Action ?? "").ToLowerInvariant();
+                if (powerAct is not ("sleep" or "lock" or "shutdown" or "restart"))
+                {
+                    await SendErrorAsync(socket, msg.RequestId, "invalid_command");
+                    return true;
+                }
+                try
+                {
                     SystemPower.Execute(powerAct);
-                    await SendAckAsync(socket, msg.RequestId);
-                    break;
+                }
+                catch (Exception ex)
+                {
+                    // A blocked/policy-restricted shutdown must not kill the
+                    // connection — report it so the client can tell the user.
+                    AgentLog.Warn($"[!] Power action '{powerAct}' failed: {ex.GetType().Name}: {ex.Message}");
+                    await SendErrorAsync(socket, msg.RequestId, "command_failed");
+                    return true;
+                }
+                await SendAckAsync(socket, msg.RequestId);
+                return true;
 
-                default:
-                    Console.WriteLine($"[?] Unknown message type: {msg.Type}");
-                    await SendErrorAsync(socket, msg.RequestId, "unknown_type");
-                    break;
+            default:
+                Console.WriteLine($"[?] Unknown message type: {msg.Type}");
+                await SendErrorAsync(socket, msg.RequestId, "unknown_type");
+                return true;
             }
         }
 
@@ -639,6 +730,12 @@ public static class Win32Input
 
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint KEYEVENTF_UNICODE = 0x0004;
+
+    // Modifiers this agent pushed down and has not lifted yet. Releasing only
+    // these avoids clearing keys the user is physically holding (the classic
+    // "stuck modifier" symptom when a connection drops mid-combo).
+    private static readonly HashSet<ushort> HeldModifiers = new();
+    private static readonly object ModifierLock = new();
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -779,10 +876,18 @@ public static class Win32Input
             else return false;
         }
 
-        foreach (var m in modifierVks) keybd_event((byte)m, 0, 0, IntPtr.Zero);
+        foreach (var m in modifierVks)
+        {
+            keybd_event((byte)m, 0, 0, IntPtr.Zero);
+            lock (ModifierLock) HeldModifiers.Add(m);
+        }
         keybd_event((byte)vk, 0, 0, IntPtr.Zero);
         keybd_event((byte)vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
-        foreach (var m in modifierVks) keybd_event((byte)m, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+        foreach (var m in modifierVks)
+        {
+            keybd_event((byte)m, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+            lock (ModifierLock) HeldModifiers.Remove(m);
+        }
         return true;
     }
 
@@ -807,6 +912,7 @@ public static class Win32Input
         const byte VK_VOLUME_UP = 0xAF;
         const byte VK_VOLUME_DOWN = 0xAE;
         const byte VK_VOLUME_MUTE = 0xAD;
+        const byte VK_MEDIA_STOP = 0xB2;
 
         byte vk = action switch
         {
@@ -816,6 +922,7 @@ public static class Win32Input
             "vol_up" => VK_VOLUME_UP,
             "vol_down" => VK_VOLUME_DOWN,
             "mute" => VK_VOLUME_MUTE,
+            "stop" => VK_MEDIA_STOP,
             _ => 0
         };
         if (vk == 0) return;
@@ -824,6 +931,11 @@ public static class Win32Input
         keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
     }
 
+    /// <summary>
+    /// Cleans up input state when a connection drops: lifts any mouse button the
+    /// agent pressed and releases only the modifier keys the agent itself is
+    /// holding - never keys the user is physically holding.
+    /// </summary>
     public static void ReleaseAllButtons()
     {
         try
@@ -832,11 +944,14 @@ public static class Win32Input
             SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_RIGHTUP } } }], Marshal.SizeOf<INPUT>());
             SendInput(1, [new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_MIDDLEUP } } }], Marshal.SizeOf<INPUT>());
 
-            ReadOnlySpan<byte> modifiers = [0x11, 0x12, 0x10, 0x5B, 0x5C];
-            foreach (var vk in modifiers)
+            List<byte> held;
+            lock (ModifierLock)
             {
-                keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+                if (HeldModifiers.Count == 0) return;
+                held = HeldModifiers.Select(m => (byte)m).ToList();
             }
+            foreach (var vk in held)
+                keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
         }
         catch (Exception ex)
         {
@@ -873,3 +988,4 @@ public static class SystemPower
         }
     }
 }
+
