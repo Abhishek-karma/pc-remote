@@ -384,9 +384,9 @@ fun SettingsScreen(
 
         val appVersionName = remember(context) {
             try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.1.8"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.2.0"
             } catch (_: Exception) {
-                "0.1.8"
+                "0.2.0"
             }
         }
 

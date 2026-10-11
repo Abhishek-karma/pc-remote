@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Fixed
+
+Stability release built on the revert to the 0.1.x line. No new features; the
+paths that crashed, hung, or misreported state were repaired.
+
+**Windows agent**
+- WebSocket reads were unbounded, so a peer that opened a socket and went
+  silent pinned a handler task, a connection slot, and the connection cap
+  forever. Every read is now bounded (15s unauthenticated, 120s
+  authenticated, re-armed on each message); writes carry a 15s timeout so a
+  peer that stops reading can no longer wedge the receive loop.
+- Connections that exceeded the limit returned before the dispose block,
+  leaking their `TcpClient`. The socket is now always released.
+- The stale-slot cleanup compared a timestamp written once at accept time,
+  so it evicted live connections after 60 seconds of quiet and the tray
+  reported zero devices. Slots now refresh on traffic.
+- `disconnect_ack` was sent fire-and-forget and raced socket disposal; it is
+  now awaited.
+- Pairing-lockout strike counts survived a served lockout, so a single wrong
+  pairing code re-locked the device for two minutes.
+- On disconnect the agent unconditionally released Ctrl/Alt/Shift/Win, which
+  cleared modifiers the user was physically holding. Only agent-held
+  modifiers are released now.
+- Static UI events were never unsubscribed and the form invoked into a
+  disposed window, silently killing the pairing-code rotation loop.
+- Certificate rotation on IP change invalidated the pinned fingerprint of
+  every paired phone. The certificate is now reused unless it is missing,
+  unreadable, or near expiry.
+- Power commands could raise an exception that killed the connection; they
+  are now logged and reported as `command_failed`.
+- Exceptions in the update handlers and in clipboard writes could terminate
+  the process. Connection errors now log full stack traces.
+
+**Android app**
+- Entering a host with a space or a pasted `address port` pair threw
+  `IllegalArgumentException` out of the click handler and crashed the app.
+  Host and port are validated before any URL is built.
+- A mistyped pairing code backed off and retried for thirty minutes, showing
+  "Reconnecting" while feeding the agent's IP lockout. `auth_failed` is now
+  terminal and the failure is explained.
+- Rapid discovery refreshes could throw on `NsdManager`; discovery failure is
+  now surfaced as an error state rather than a crash.
+- A `START_STICKY` foreground service could be resurrected after process
+  death with no socket left to keep alive; it now stops itself.
+
+### Security
+- In-app updates downloaded and executed a Windows executable with no
+  verification. Updates must now match the release `SHA256SUMS.txt`, and the
+  download is discarded on a mismatch or an unreadable checksum file.
+
+### Build
+- `dotnet test` was run after a restore that excluded the test project, so
+  the suite almost certainly never ran in CI. The workflow now restores,
+  builds, and tests the solution.
+- Added an MIT license, and corrected the README feature claim from F1-F24 to
+  the F1-F12 that the keyboard actually implements.
+
+### Reverted
+- The 0.2.x development line (0.2.0 through 0.2.3) was reverted in favour of
+  this stable baseline.
+
 ## [0.1.8] - 2026-09-20
 
 ### Added & Enhanced
