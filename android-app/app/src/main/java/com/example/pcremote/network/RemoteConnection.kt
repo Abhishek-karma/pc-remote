@@ -112,11 +112,18 @@ class PinStore(private val prefs: SharedPreferences) {
         prefs.edit().remove("certpin_$host").apply()
     }
 
-    /** Migrate an IP-based pin entry to cover a new IP (DHCP change). */
-    fun aliasPin(newHost: String, fingerprint: String) {
-        if (prefs.getString("certpin_$newHost", null) == null) {
-            prefs.edit().putString("certpin_$newHost", fingerprint).apply()
+    /**
+     * Migrate an IP-based pin entry to cover a new IP (DHCP change). Only records
+     * the alias when it matches the existing pin for the old host — otherwise a
+     * spoofed or mismatched fingerprint could be persisted for the new IP.
+     */
+    fun aliasPin(newHost: String, fingerprint: String, oldHost: String? = null) {
+        if (prefs.getString("certpin_$newHost", null) != null) return
+        if (oldHost != null) {
+            val existing = prefs.getString("certpin_$oldHost", null)
+            if (existing != null && existing != fingerprint) return
         }
+        prefs.edit().putString("certpin_$newHost", fingerprint).apply()
     }
 }
 
@@ -476,6 +483,10 @@ class TokenStore(private val prefs: android.content.SharedPreferences) {
         val edit = prefs.edit()
         edit.putString("token_$host", token)
         if (pcName != null) edit.putString("token_name_$pcName", token)
+        // Maintain an index so allHosts() is O(1) instead of scanning every pref key.
+        val count = prefs.getInt("_host_count", 0)
+        edit.putString("token_host_$count", host)
+        edit.putInt("_host_count", count + 1)
         edit.apply()
     }
 
@@ -483,12 +494,10 @@ class TokenStore(private val prefs: android.content.SharedPreferences) {
     fun forget(host: String) = prefs.edit().remove("token_$host").apply()
 
     /** Hosts with a saved token, sorted — feeds the Settings "Paired PCs" list. */
-    fun allHosts(): List<String> {
-        val prefix = "token_"
-        return prefs.all.keys.filter { it.startsWith(prefix) && !it.startsWith("token_name_") }
-            .map { it.removePrefix(prefix) }
+    fun allHosts(): List<String> =
+        (0 until prefs.getInt("_host_count", 0))
+            .mapNotNull { prefs.getString("token_host_$it", null) }
             .sorted()
-    }
 }
 
 /**

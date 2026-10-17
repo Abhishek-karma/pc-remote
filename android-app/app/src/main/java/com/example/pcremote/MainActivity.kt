@@ -150,15 +150,17 @@ private fun ControlHub(
     val pcName = connection.currentHost?.let { settingsStore.getName(it) ?: it } ?: "PC Remote"
 
     // Foreground service + notification permission while a session is active.
+    var notificationDenied by rememberSaveable { mutableStateOf(false) }
     val notificationPermissionLauncher =
         androidx.activity.compose.rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
-        ) { }
+        ) { granted -> notificationDenied = !granted }
     LaunchedEffect(connState == ConnectionState.CONNECTED) {
         if (connState == ConnectionState.CONNECTED) {
             if (Build.VERSION.SDK_INT >= 33 &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
+                != PackageManager.PERMISSION_GRANTED &&
+                !notificationDenied
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }

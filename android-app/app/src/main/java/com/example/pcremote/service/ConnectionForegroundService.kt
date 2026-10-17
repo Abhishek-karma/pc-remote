@@ -54,7 +54,7 @@ class ConnectionForegroundService : Service() {
         wakeLock = powerManager?.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "PCRemote::ConnectionWakeLock"
-        )?.apply { acquire(10 * 60 * 1000L) }
+        )?.apply { acquire() } // no timeout — released in onDestroy
 
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         @Suppress("DEPRECATION")
