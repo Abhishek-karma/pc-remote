@@ -117,9 +117,11 @@ fun PairingScreen(
 
     fun onPcSelected(pc: DiscoveredPc) {
         host = pc.host
-        if (tokenStore.getToken(pc.host) != null) {
+        val savedToken = tokenStore.getToken(pc.host)
+            ?: settingsStore.getName(pc.host)?.let { tokenStore.getTokenByName(it) }
+        if (savedToken != null) {
             // Previously paired: reconnect directly
-            connection.connect(host = pc.host, pairingCode = null)
+            connection.connect(host = pc.host, pairingCode = null, pcName = pc.displayName)
         } else {
             // Unknown host: prefill and prompt for pairing code
             pairingCode = ""

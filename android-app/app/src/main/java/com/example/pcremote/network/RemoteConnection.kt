@@ -166,9 +166,8 @@ class RemoteConnection(
     private var reconnectStartedAt = 0L
     private val reconnectPolicy = ReconnectPolicy()
     private var intentionallyClosed = false
-    // Server-assigned connection key returned in auth_ok; sent on disconnect so the
-    // server can release the slot immediately without waiting for TCP timeout.
     private var currentConnKey: String? = null
+    private var currentPcName: String? = null
 
         private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
     val state: StateFlow<ConnectionState> = _state
@@ -200,13 +199,14 @@ class RemoteConnection(
     val lastDisconnectExpected: Boolean get() = expectedDisconnect
 
     /** Drops any in-flight reconnect and starts a fresh connection. */
-    fun connect(host: String, port: Int = 58642, pairingCode: String? = null) {
+    fun connect(host: String, port: Int = 58642, pairingCode: String? = null, pcName: String? = null) {
         activeInstance = this
         reconnectJob?.cancel()
         reconnectAttemptInternal = 0
         intentionallyClosed = false
         authFailed = false
         expectedDisconnect = false
+        currentPcName = pcName
 
         // OkHttp throws IllegalArgumentException synchronously from
         // Request.Builder().url() for a host it cannot parse, which would
@@ -276,6 +276,7 @@ class RemoteConnection(
         webSocket = clientFor(host).newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val savedToken = tokenStore.getToken(host)
+                    ?: currentPcName?.let { tokenStore.getTokenByName(it) }
                 sendRaw(RemoteMessage(version = 1, requestId = generateRequestId(), type = "auth", token = savedToken, pairingCode = pairingCode))
             }
 
